@@ -1,0 +1,69 @@
+_wandb:
+    value:
+        cli_version: 0.24.0
+        e:
+            0plkprrn58zv2y6s2yjmn7aq1fa7z8ij:
+                args:
+                    - --config
+                    - config/sea_surface_rollout.yaml
+                    - --ckpt
+                    - outputs/sea_surface_rollout_lightning/checkpoints/last.ckpt
+                codePath: scripts/test.py
+                codePathLocal: scripts/test.py
+                cpu_count: 16
+                cpu_count_logical: 16
+                cudaVersion: "12.6"
+                disk:
+                    /:
+                        total: "210239463424"
+                        used: "129070645248"
+                email: zhouflora32@gmail.com
+                executable: /home/chenping/anaconda3/envs/fno/bin/python
+                git:
+                    commit: cf9b2e794246f3e92bf6f08bf7ca49c752dc2e71
+                    remote: git@github.com:Flora77/fno_rollout.git
+                gpu: NVIDIA GeForce RTX 2080 Ti
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Turing
+                      cudaCores: 4352
+                      memoryTotal: "11811160064"
+                      name: NVIDIA GeForce RTX 2080 Ti
+                      uuid: GPU-00c38213-7865-4690-e972-ae5bbd8a9a11
+                host: 192-168-2-184
+                memory:
+                    total: "33649139712"
+                os: Linux-5.15.0-176-generic-x86_64-with-glibc2.35
+                program: /home/chenping/neuraloperator/scripts/test.py
+                python: CPython 3.9.25
+                root: ./outputs/wandb
+                startedAt: "2026-04-20T14:21:56.789397Z"
+                writerId: 0plkprrn58zv2y6s2yjmn7aq1fa7z8ij
+        m:
+            - "1": trainer/global_step
+              "6":
+                - 3
+              "7": []
+            - "2": '*'
+              "5": 1
+              "6":
+                - 1
+              "7": []
+        python_version: 3.9.25
+        t:
+            "1":
+                - 1
+                - 106
+            "2":
+                - 1
+                - 106
+            "3":
+                - 2
+                - 7
+                - 13
+                - 15
+                - 66
+            "4": 3.9.25
+            "5": 0.24.0
+            "12": 0.24.0
+            "13": linux-x86_64
