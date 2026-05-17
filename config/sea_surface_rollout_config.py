@@ -91,7 +91,7 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # experiment / io
     # -------------------------
-    experiment_name: str = "sea_surface_rollout_new"
+    experiment_name: str = "sea_surface_simple_new"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"

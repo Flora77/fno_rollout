@@ -109,7 +109,7 @@ def build_rollout_loader(config: SeaSurfaceRolloutConfig, split: str):
 
 @torch.no_grad()
 def rollout_predict(model: torch.nn.Module, x_init: torch.Tensor, rollout_steps: int, input_steps: int, one_shot_steps: int) -> torch.Tensor:
-    model.eval()
+    model.eval()     
     context = x_init.clone()
     preds = []
     generated = 0

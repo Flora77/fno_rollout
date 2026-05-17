@@ -245,8 +245,8 @@ def plot_chunk_rmse(data: Dict, save_dir: str) -> None:
 def plot_global_spectrum(data: Dict, save_dir: str) -> None:
     # 频谱已是物理单位，不做反归一化
     k = data["radial_k"]
-    true_spec = np.maximum(data["global_spectrum_true"], 1e-12)
-    pred_spec = np.maximum(data["global_spectrum_pred"], 1e-12)
+    true_spec = np.maximum(data["global_spectrum_true"], 1e-6)
+    pred_spec = np.maximum(data["global_spectrum_pred"], 1e-6)
 
     plt.figure(figsize=(8, 5))
     plt.semilogy(k, true_spec, label="True")

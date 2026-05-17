@@ -87,6 +87,10 @@ target/
 *.jpg
 *.gif
 *.npz
+*.zip
+collected_JONS_gamma_mat/
+collected_JONS_simple_mat/
 checkpoints/
 plots/
 logs/
+neuraloperators
