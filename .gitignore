@@ -94,3 +94,9 @@ checkpoints/
 plots/
 logs/
 neuraloperators
+
+# 上传github的git指令
+# git add .gitignore
+# git commit -m "update .gitignore"
+# git push origin main  
+

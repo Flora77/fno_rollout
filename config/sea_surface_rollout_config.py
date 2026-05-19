@@ -8,7 +8,7 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # data
     # -------------------------
-    data_root: str = "./data/sea_surface_simple"
+    data_root: str = "./data/bimodal"
     variable: str = "height"
     input_steps: int = 40
     output_steps: int = 20
@@ -33,31 +33,36 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # optimization
     # -------------------------
-    learning_rate: float = 1e-3
+    # learning_rate: float = 1e-3
+    learning_rate: float = 5e-4
     weight_decay: float = 1e-4
-    n_epochs: int = 80
-    early_stop_patience: int = 10
+    n_epochs: int = 100
+    early_stop_patience: int = 20
     grad_clip_norm: float = 1.0
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     # lr scheduler
     use_lr_scheduler: bool = True
-    lr_scheduler_type: str = "plateau"     # "step" / "cosine" / "plateau"
+    lr_scheduler_type: str = "cosine"     # "step" / "cosine" / "plateau"
     lr_scheduler_step_size: int = 20
     lr_scheduler_gamma: float = 0.5
     lr_scheduler_t_max: int = n_epochs    # cosine 用
     lr_scheduler_eta_min: float = 1e-6    # cosine 最小学习率
-    lr_scheduler_patience: int = 5        # plateau 用
+    lr_scheduler_patience: int = 10        # plateau 用
     lr_scheduler_factor: float = 0.5      # plateau 用
     lr_scheduler_min_lr: float = 1e-6
 
     # -------------------------
     # rollout training design
     # -------------------------
-    use_long_rollout_curriculum: bool = False
+    use_long_rollout_curriculum: bool = True
     rollout_train_steps: tuple = (20, 40, 80, 120, 160, 240)
-    rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.25, 0.45, 0.65, 0.80)
+    rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
+    # rollout_train_steps = (40, 80, 160, 240, 320, 480)
+    # rollout_curriculum_boundaries = (0.0, 0.10, 0.25, 0.40, 0.60, 0.75)
+    # rollout_train_steps = (20,)
+    # rollout_curriculum_boundaries =(0.0,)               
     rollout_steps: int = 240
     rollout_stride: int = 4
     rollout_detach_context: bool = False
@@ -91,7 +96,8 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # experiment / io
     # -------------------------
-    experiment_name: str = "sea_surface_simple_new"
+    # experiment_name: str = "random_phase_Tp_sp_rollout_lr5e-4"
+    experiment_name: str = "bimodal_not_use_segment_weighting"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"
