@@ -90,6 +90,19 @@ class SeaSurfaceRolloutConfig:
     normalize_chunk_time_weights: bool = True
 
     # -------------------------
+    # residual prediction
+    # -------------------------
+    # True: model learns residual DeltaY, and final prediction is base(X) + DeltaY.
+    # False: original behavior, model directly predicts absolute future fields.
+    use_residual_prediction: bool = True
+
+    # Supported modes:
+    #   "last"   : base_{t+k} = eta_t
+    #   "linear" : base_{t+k} = eta_t + k/lag * (eta_t - eta_{t-lag})
+    residual_base_mode: str = "last"
+    residual_linear_lag: int = 4
+
+    # -------------------------
     # evaluation / plotting
     # -------------------------
     dt: float = 0.25
@@ -105,7 +118,7 @@ class SeaSurfaceRolloutConfig:
     # experiment / io
     # -------------------------
     # experiment_name: str = "random_phase_Tp_sp_rollout_lr5e-4"
-    experiment_name: str = "test"
+    experiment_name: str = "test_residual_last"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"

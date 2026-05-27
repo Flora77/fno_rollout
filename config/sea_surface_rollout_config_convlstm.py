@@ -8,38 +8,40 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # data
     # -------------------------
-    data_root: str = "./data/bimodal_1s"
+    data_root: str = "./data/bimodal"
     variable: str = "height"
+
+    # ConvLSTM-RNO setting:
+    # 40 input frames -> one forward predicts 20 frames -> autoregressive rollout to 240 frames.
     input_steps: int = 40
-    output_steps: int = 20
+    output_steps: int = 240
     stride: int = 4
     normalize: bool = True
-    batch_size: int = 16
-    val_batch_size: int = 16
-    test_batch_size: int = 16
+    batch_size: int = 8
+    val_batch_size: int = 8
+    test_batch_size: int = 8
     num_workers: int = 0
-    # batch_size: int = 8
-    # val_batch_size: int = 8
-    # test_batch_size: int = 8
-    # num_workers: int = 4
     pin_memory: bool = True
 
     # -------------------------
     # model
     # -------------------------
-    model_arch: str = "fno"  # fno / tfno
-    n_modes: tuple = (32, 32)
-    # n_modes: tuple = (28, 28)
+    model_arch: str = "convlstm"
 
-    hidden_channels: int = 32
-    lifting_channels: int = 64
-    projection_channels: int = 64
-    n_layers: int = 4
+    # Paper comparison: ConvLSTM with 4/2 convolutional recurrent layers and 128/64/32 channels.
+    # In this 2D rollout code, input tensor is [B, T_in, H, W]. ConvLSTM treats T_in as time,
+    # and each sea-surface frame has one channel.
+    convlstm_input_channels: int = 1
+    convlstm_hidden_channels: int = 32
+    convlstm_num_layers: int = 2
+    convlstm_kernel_size: int = 3
+    convlstm_bias: bool = True
+    convlstm_output_kernel_size: int = 1
+    convlstm_decoder_input: str = "last"  # last / zero
 
     # -------------------------
     # optimization
     # -------------------------
-    # learning_rate: float = 1e-3
     learning_rate: float = 5e-4
     weight_decay: float = 1e-4
     n_epochs: int = 100
@@ -50,30 +52,26 @@ class SeaSurfaceRolloutConfig:
 
     # lr scheduler
     use_lr_scheduler: bool = True
-    lr_scheduler_type: str = "cosine"     # "step" / "cosine" / "plateau"
+    lr_scheduler_type: str = "cosine"     # step / cosine / plateau
     lr_scheduler_step_size: int = 20
     lr_scheduler_gamma: float = 0.5
-    lr_scheduler_t_max: int = n_epochs    # cosine 用
-    lr_scheduler_eta_min: float = 1e-6    # cosine 最小学习率
-    lr_scheduler_patience: int = 10        # plateau 用
-    lr_scheduler_factor: float = 0.5      # plateau 用
+    lr_scheduler_t_max: int = n_epochs
+    lr_scheduler_eta_min: float = 1e-6
+    lr_scheduler_patience: int = 10
+    lr_scheduler_factor: float = 0.5
     lr_scheduler_min_lr: float = 1e-6
 
     # -------------------------
     # rollout training design
     # -------------------------
-    use_long_rollout_curriculum: bool = True
-    rollout_train_steps: tuple = (20, 40, 80, 120, 160, 240)
-    rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
-    # rollout_train_steps = (40, 80, 160, 240, 320, 480)
-    # rollout_curriculum_boundaries = (0.0, 0.10, 0.25, 0.40, 0.60, 0.75)
-    # rollout_train_steps = (16,)
-    # rollout_curriculum_boundaries =(0.0,)               
-    # rollout_train_steps: tuple = (16, 32, 48, 64, 80, 90)
+    use_long_rollout_curriculum: bool = False
+    # rollout_train_steps: tuple = (20, 40, 80, 120, 160, 240)
     # rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
+    rollout_train_steps: tuple = (240,)
+    rollout_curriculum_boundaries: tuple = (0.0,)
     rollout_steps: int = 240
     rollout_stride: int = 4
-    rollout_detach_context: bool = False
+    rollout_detach_context: bool = True
 
     use_segment_weighting: bool = True
     segment_weight_type: str = "linear"  # none / linear / power / exp
@@ -98,14 +96,13 @@ class SeaSurfaceRolloutConfig:
     spectral_high_k_ratio: float = 0.67
     spectral_band_split_ratios: tuple = (0.33, 0.67, 0.85)
     plot_num_samples: int = 3
-    plot_future_steps: tuple = (19,59,119)
+    plot_future_steps: tuple = (19, 59, 119, 239)
     denormalize_for_plot: bool = True
 
     # -------------------------
     # experiment / io
     # -------------------------
-    # experiment_name: str = "random_phase_Tp_sp_rollout_lr5e-4"
-    experiment_name: str = "test"
+    experiment_name: str = "bimodal_convlstm"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"

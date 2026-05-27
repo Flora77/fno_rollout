@@ -10,36 +10,70 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     data_root: str = "./data/bimodal_1s"
     variable: str = "height"
-    input_steps: int = 40
-    output_steps: int = 20
+
+    # RNO/MSFNO-RNO setting:
+    # 40 input frames -> one forward predicts 20 frames -> autoregressive rollout to 240 frames.
+    input_steps: int = 16
+    output_steps: int = 16
     stride: int = 4
     normalize: bool = True
     batch_size: int = 16
     val_batch_size: int = 16
     test_batch_size: int = 16
     num_workers: int = 0
-    # batch_size: int = 8
-    # val_batch_size: int = 8
-    # test_batch_size: int = 8
-    # num_workers: int = 4
     pin_memory: bool = True
 
     # -------------------------
     # model
     # -------------------------
-    model_arch: str = "fno"  # fno / tfno
-    n_modes: tuple = (32, 32)
-    # n_modes: tuple = (28, 28)
+    # fno / tfno / msfno
+    model_arch: str = "msfno"
 
+    # Base FNO settings used by each MSFNO branch.
+    # The paper commonly uses 32 spatial modes on a 64x64 grid; if GPU memory is tight, use (28, 28).
+    n_modes: tuple = (32, 32)
     hidden_channels: int = 32
     lifting_channels: int = 64
     projection_channels: int = 64
     n_layers: int = 4
 
     # -------------------------
+    # MSFNO settings
+    # -------------------------
+    # Paper-style multi-scale branches. Main paper setting for N branches:
+    #     c_i = {0.5, 1, 2, 4, ..., 2^(N-2)}
+    # For N=4 this is (0.5, 1, 2, 4). Appendix B also tests (1, 2, 4, 8).
+    msfno_branch_arch: str = "fno"       # fno / tfno
+    msfno_scales: tuple = (0.5, 1.0, 2.0, 4.0)
+
+    # To keep parameter count comparable with a width=32 single FNO, each branch uses width≈16.
+    # For a larger paper-style setting, try msfno_scales=(0.5,1,2,4,8,16,32,64) and width_factor=1.0.
+    msfno_branch_width_factor: float = 0.5
+    msfno_branch_hidden_channels: int = 0       # 0 -> hidden_channels * factor
+    msfno_branch_lifting_channels: int = 0      # 0 -> lifting_channels * factor
+    msfno_branch_projection_channels: int = 0   # 0 -> projection_channels * factor
+
+    # Complete paper-style scaling adapted to this 2D-FNO code:
+    #     branch input z_i = [c_i * eta, c_i * x, c_i * y].
+    msfno_scale_input_field: bool = True  # 缩放输入幅值
+    msfno_add_scaled_coords: bool = True  # 在输入中添加坐标分量
+    msfno_scale_coordinates: bool = True  # 缩放坐标范围
+    msfno_coord_range: tuple = (0.0, 1.0) # 坐标缩放范围
+    msfno_output_scale: bool = False      # 是否缩放输出
+    msfno_branch_positional_embedding: object = None # 是否使用位置编码
+
+    # fusion = conv follows the paper's CNN-filter idea.
+    # Alternatives for ablation: weighted_sum / mean /conv
+    msfno_fusion: str = "conv"
+    msfno_conv_hidden_channels: tuple = (32, 64, 32)
+    # msfno_conv_hidden_channels: tuple = (8, 8)
+    msfno_conv_kernel_size: tuple = (3, 3, 3)
+    msfno_conv_norm: str = "batch"       # batch / instance / none
+    msfno_conv_activation: str = "relu"  # relu / gelu / silu / sin / none
+
+    # -------------------------
     # optimization
     # -------------------------
-    # learning_rate: float = 1e-3
     learning_rate: float = 5e-4
     weight_decay: float = 1e-4
     n_epochs: int = 100
@@ -50,28 +84,28 @@ class SeaSurfaceRolloutConfig:
 
     # lr scheduler
     use_lr_scheduler: bool = True
-    lr_scheduler_type: str = "cosine"     # "step" / "cosine" / "plateau"
+    lr_scheduler_type: str = "cosine"     # step / cosine / plateau
     lr_scheduler_step_size: int = 20
     lr_scheduler_gamma: float = 0.5
-    lr_scheduler_t_max: int = n_epochs    # cosine 用
-    lr_scheduler_eta_min: float = 1e-6    # cosine 最小学习率
-    lr_scheduler_patience: int = 10        # plateau 用
-    lr_scheduler_factor: float = 0.5      # plateau 用
+    lr_scheduler_t_max: int = n_epochs
+    lr_scheduler_eta_min: float = 1e-6
+    lr_scheduler_patience: int = 10
+    lr_scheduler_factor: float = 0.5
     lr_scheduler_min_lr: float = 1e-6
 
     # -------------------------
     # rollout training design
     # -------------------------
     use_long_rollout_curriculum: bool = True
-    rollout_train_steps: tuple = (20, 40, 80, 120, 160, 240)
-    rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
+    # rollout_train_steps: tuple = (20, 40, 80, 120, 160, 240)
+    # rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
     # rollout_train_steps = (40, 80, 160, 240, 320, 480)
     # rollout_curriculum_boundaries = (0.0, 0.10, 0.25, 0.40, 0.60, 0.75)
     # rollout_train_steps = (16,)
-    # rollout_curriculum_boundaries =(0.0,)               
-    # rollout_train_steps: tuple = (16, 32, 48, 64, 80, 90)
-    # rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
-    rollout_steps: int = 240
+    # rollout_curriculum_boundaries =(0.0,)  
+    rollout_train_steps: tuple = (16, 32, 48, 64, 80, 90)
+    rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
+    rollout_steps: int = 90
     rollout_stride: int = 4
     rollout_detach_context: bool = False
 
@@ -92,20 +126,19 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # evaluation / plotting
     # -------------------------
-    dt: float = 0.25
+    dt: float = 1.0
     evaluation_num_full_samples_to_save: int = 3
     evaluation_num_trace_points: int = 5
     spectral_high_k_ratio: float = 0.67
     spectral_band_split_ratios: tuple = (0.33, 0.67, 0.85)
     plot_num_samples: int = 3
-    plot_future_steps: tuple = (19,59,119)
+    plot_future_steps: tuple = (19,49,89)
     denormalize_for_plot: bool = True
 
     # -------------------------
     # experiment / io
     # -------------------------
-    # experiment_name: str = "random_phase_Tp_sp_rollout_lr5e-4"
-    experiment_name: str = "test"
+    experiment_name: str = "msfno_16_90_rollout"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"
