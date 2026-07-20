@@ -11,35 +11,62 @@ class SeaSurfaceRolloutConfig:
     data_root: str = "./data/bimodal"
     variable: str = "height"
 
-    # Fair-comparison rollout setting, aligned with the FNO-UNet metrics config:
+    # Same rollout protocol as the FNO-UNet metrics version:
     # 60 input frames -> one forward predicts 30 frames -> autoregressive rollout to 300 frames.
-    # Keep batch_size smaller than FNO-UNet by default because ConvLSTM backpropagates through
-    # recurrent spatial states and may use more memory during long-rollout training.
     input_steps: int = 60
     output_steps: int = 30
     stride: int = 4
     normalize: bool = True
-    batch_size: int = 8
-    val_batch_size: int = 8
-    test_batch_size: int = 8
+    batch_size: int = 16
+    val_batch_size: int = 16
+    test_batch_size: int = 16
     num_workers: int = 0
     pin_memory: bool = True
 
     # -------------------------
     # model
     # -------------------------
-    model_arch: str = "convlstm"
+    # Options:
+    #   fno   : the original RNO/FNO baseline. The old "rno" filename actually uses this model.
+    #   tfno  : tensorized FNO if your neuraloperator version supports it.
+    #   msfno : multi-scale FNO wrapper implemented in the training script.
+    model_arch: str = "fno"
 
-    # Paper comparison: ConvLSTM with 4/2 convolutional recurrent layers and 128/64/32 channels.
-    # In this 2D rollout code, input tensor is [B, T_in, H, W]. ConvLSTM treats T_in as time,
-    # and each sea-surface frame has one channel.
-    convlstm_input_channels: int = 1
-    convlstm_hidden_channels: int = 32
-    convlstm_num_layers: int = 2
-    convlstm_kernel_size: int = 3
-    convlstm_bias: bool = True
-    convlstm_output_kernel_size: int = 1
-    convlstm_decoder_input: str = "last"  # last / zero
+    # Base FNO settings. For MSFNO, these are the reference dimensions used to build branch widths.
+    n_modes: tuple = (28, 28)
+    hidden_channels: int = 32
+    lifting_channels: int = 64
+    projection_channels: int = 64
+    n_layers: int = 4
+
+    # -------------------------
+    # MSFNO settings
+    # -------------------------
+    msfno_branch_arch: str = "fno"       # fno / tfno
+    msfno_scales: tuple = (0.5, 1.0, 2.0, 4.0)
+
+    # 0 means computed from the base FNO settings and msfno_branch_width_factor.
+    # With width_factor=0.5, each branch width is roughly 16 when hidden_channels=32.
+    msfno_branch_width_factor: float = 0.5
+    msfno_branch_hidden_channels: int = 0
+    msfno_branch_lifting_channels: int = 0
+    msfno_branch_projection_channels: int = 0
+
+    # Branch input z_i = [c_i * eta, c_i * x, c_i * y].
+    msfno_scale_input_field: bool = True
+    msfno_add_scaled_coords: bool = True
+    msfno_scale_coordinates: bool = True
+    msfno_coord_range: tuple = (0.0, 1.0)
+    msfno_output_scale: bool = False
+    msfno_branch_positional_embedding: object = None
+
+    # Branch fusion. "conv" uses a lightweight 3D CNN over [branch, time, y, x].
+    # Alternatives for ablation: weighted_sum / mean.
+    msfno_fusion: str = "conv"
+    msfno_conv_hidden_channels: tuple = (8, 8)
+    msfno_conv_kernel_size: tuple = (3, 3, 3)
+    msfno_conv_norm: str = "batch"       # batch / instance / none
+    msfno_conv_activation: str = "relu"  # relu / gelu / silu / sin / none
 
     # -------------------------
     # optimization
@@ -50,8 +77,7 @@ class SeaSurfaceRolloutConfig:
     early_stop_patience: int = 100
     grad_clip_norm: float = 1.0
 
-    # Match the FNO-UNet training loss switches so ConvLSTM can be compared under
-    # the same long-rollout and local-gradient constraints.
+    # Same auxiliary slope loss switch as FNO-UNet, for fair ablation/comparison.
     use_spatial_gradient_loss: bool = False
     spatial_gradient_loss_weight: float = 0.05
 
@@ -77,7 +103,7 @@ class SeaSurfaceRolloutConfig:
     rollout_curriculum_boundaries: tuple = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6)
     rollout_steps: int = 300
     rollout_stride: int = 4
-    rollout_detach_context: bool = True
+    rollout_detach_context: bool = False
 
     use_segment_weighting: bool = False
     segment_weight_type: str = "linear"  # none / linear / power / exp
@@ -108,7 +134,7 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # experiment / io
     # -------------------------
-    experiment_name: str = "bimodal_convlstm"
+    experiment_name: str = "fno_R300"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"

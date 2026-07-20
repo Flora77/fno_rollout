@@ -8,13 +8,10 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # data
     # -------------------------
-    data_root: str = "./data/bimodal_1s"
+    data_root: str = "./data/bimodal"
     variable: str = "height"
-
-    # RNO/MSFNO-RNO setting:
-    # 40 input frames -> one forward predicts 20 frames -> autoregressive rollout to 240 frames.
-    input_steps: int = 16
-    output_steps: int = 16
+    input_steps: int = 60
+    output_steps: int = 30
     stride: int = 4
     normalize: bool = True
     batch_size: int = 16
@@ -26,50 +23,47 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # model
     # -------------------------
-    # fno / tfno / msfno
-    model_arch: str = "msfno"
-
-    # Base FNO settings used by each MSFNO branch.
-    # The paper commonly uses 32 spatial modes on a 64x64 grid; if GPU memory is tight, use (28, 28).
+    # Options: fno / tfno / fno_band_unet_gated_decoder
+    model_arch: str = "fno_band_unet_gated_decoder"
     n_modes: tuple = (32, 32)
     hidden_channels: int = 32
     lifting_channels: int = 64
     projection_channels: int = 64
     n_layers: int = 4
 
-    # -------------------------
-    # MSFNO settings
-    # -------------------------
-    # Paper-style multi-scale branches. Main paper setting for N branches:
-    #     c_i = {0.5, 1, 2, 4, ..., 2^(N-2)}
-    # For N=4 this is (0.5, 1, 2, 4). Appendix B also tests (1, 2, 4, 8).
-    msfno_branch_arch: str = "fno"       # fno / tfno
-    msfno_scales: tuple = (0.5, 1.0, 2.0, 4.0)
+    # FNO + frequency-band U-Net + gated residual
+    # coarse = FNO(x)
+    # z = [x, coarse]
+    # residual = BandUNet(z), with Fourier low/mid/high branches
+    # gate = sigmoid(GateNet(z))
+    # pred = coarse + residual_scale * gate * residual
+    fno_unet_fno_arch: str = "fno"
+    fno_unet_depth: int = 3
+    fno_unet_decoder_dropout: float = 0.0
+    fno_unet_use_context: bool = True
+    fno_unet_use_residual: bool = True
+    fno_unet_residual_scale: float = 1.0
 
-    # To keep parameter count comparable with a width=32 single FNO, each branch uses width≈16.
-    # For a larger paper-style setting, try msfno_scales=(0.5,1,2,4,8,16,32,64) and width_factor=1.0.
-    msfno_branch_width_factor: float = 0.5
-    msfno_branch_hidden_channels: int = 0       # 0 -> hidden_channels * factor
-    msfno_branch_lifting_channels: int = 0      # 0 -> lifting_channels * factor
-    msfno_branch_projection_channels: int = 0   # 0 -> projection_channels * factor
+    # (1) gated residual: adaptive correction strength in space and predicted time channel.
+    fno_unet_use_gated_residual: bool = True
+    fno_unet_gate_hidden_channels: int = 32
+    # 0.0 -> initial gate about 0.5; -1.0 -> more conservative initial gate about 0.27.
+    fno_unet_gate_bias_init: float = 0.0
 
-    # Complete paper-style scaling adapted to this 2D-FNO code:
-    #     branch input z_i = [c_i * eta, c_i * x, c_i * y].
-    msfno_scale_input_field: bool = True  # 缩放输入幅值
-    msfno_add_scaled_coords: bool = True  # 在输入中添加坐标分量
-    msfno_scale_coordinates: bool = True  # 缩放坐标范围
-    msfno_coord_range: tuple = (0.0, 1.0) # 坐标缩放范围
-    msfno_output_scale: bool = False      # 是否缩放输出
-    msfno_branch_positional_embedding: object = None # 是否使用位置编码
+    # (2) frequency-band U-Net branches.
+    # cutoffs=(0.33,0.67) gives low/mid/high branches in normalized radial wavenumber.
+    # Use branch_base_channels=16 to keep 3 branches close to the old single-UNet cost.
+    fno_unet_band_branch_base_channels: int = 16
+    fno_unet_band_cutoffs: tuple = (0.33, 0.67)
+    fno_unet_band_transition_width: float = 0.04
+    # Options: "sum", "mean", "learnable_scalar", "learnable_gate".
+    # learnable_gate uses softmax spatial gates to fuse low/mid/high residuals.
+    fno_unet_band_fusion: str = "learnable_gate"
+    fno_unet_band_gate_hidden_channels: int = 32
 
-    # fusion = conv follows the paper's CNN-filter idea.
-    # Alternatives for ablation: weighted_sum / mean /conv
-    msfno_fusion: str = "conv"
-    msfno_conv_hidden_channels: tuple = (32, 64, 32)
-    # msfno_conv_hidden_channels: tuple = (8, 8)
-    msfno_conv_kernel_size: tuple = (3, 3, 3)
-    msfno_conv_norm: str = "batch"       # batch / instance / none
-    msfno_conv_activation: str = "relu"  # relu / gelu / silu / sin / none
+    # (3) periodic padding in all CNN/U-Net/Gate convolution blocks.
+    # Options: "periodic"/"circular", "zero", "reflect".
+    fno_unet_padding_mode: str = "periodic"
 
     # -------------------------
     # optimization
@@ -79,12 +73,17 @@ class SeaSurfaceRolloutConfig:
     n_epochs: int = 100
     early_stop_patience: int = 100
     grad_clip_norm: float = 1.0
+
+    # Auxiliary slope loss. The previous sweep showed 0.05 works best among 0.02/0.05/0.10.
+    use_spatial_gradient_loss: bool = True
+    spatial_gradient_loss_weight: float = 0.05
+
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
     # lr scheduler
     use_lr_scheduler: bool = True
-    lr_scheduler_type: str = "cosine"     # step / cosine / plateau
+    lr_scheduler_type: str = "cosine"     # "step" / "cosine" / "plateau"
     lr_scheduler_step_size: int = 20
     lr_scheduler_gamma: float = 0.5
     lr_scheduler_t_max: int = n_epochs
@@ -99,13 +98,9 @@ class SeaSurfaceRolloutConfig:
     use_long_rollout_curriculum: bool = True
     # rollout_train_steps: tuple = (20, 40, 80, 120, 160, 240)
     # rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
-    # rollout_train_steps = (40, 80, 160, 240, 320, 480)
-    # rollout_curriculum_boundaries = (0.0, 0.10, 0.25, 0.40, 0.60, 0.75)
-    # rollout_train_steps = (16,)
-    # rollout_curriculum_boundaries =(0.0,)  
-    rollout_train_steps: tuple = (16, 32, 48, 64, 80, 90)
+    rollout_train_steps: tuple = ( 30, 60, 120, 180, 240, 300)
     rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
-    rollout_steps: int = 90
+    rollout_steps: int = 300
     rollout_stride: int = 4
     rollout_detach_context: bool = False
 
@@ -126,20 +121,20 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # evaluation / plotting
     # -------------------------
-    dt: float = 1.0
+    dt: float = 0.25
     evaluation_num_full_samples_to_save: int = 3
     evaluation_num_trace_points: int = 5
     spectral_high_k_ratio: float = 0.67
     spectral_band_split_ratios: tuple = (0.33, 0.67, 0.85)
     plot_num_samples: int = 3
-    plot_future_steps: tuple = (19,49,89)
+    plot_future_steps: tuple = (59, 179,359)
     denormalize_for_plot: bool = True
 
     # -------------------------
     # experiment / io
     # -------------------------
-    experiment_name: str = "msfno_16_90_rollout"
-    checkpoint_dir: str = "./checkpoints"
+    experiment_name: str = "fno_band_unet_gated_periodic_grad005_scale1"
+    checkpoint_dir: str = "./checkpoints/fno_band_unet_gated_rollout300"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"
     train_summary_csv: str = "ablation_train_summary.csv"

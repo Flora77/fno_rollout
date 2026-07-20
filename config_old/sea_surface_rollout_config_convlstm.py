@@ -11,12 +11,10 @@ class SeaSurfaceRolloutConfig:
     data_root: str = "./data/bimodal"
     variable: str = "height"
 
-    # Fair-comparison rollout setting, aligned with the FNO-UNet metrics config:
-    # 60 input frames -> one forward predicts 30 frames -> autoregressive rollout to 300 frames.
-    # Keep batch_size smaller than FNO-UNet by default because ConvLSTM backpropagates through
-    # recurrent spatial states and may use more memory during long-rollout training.
-    input_steps: int = 60
-    output_steps: int = 30
+    # ConvLSTM-RNO setting:
+    # 40 input frames -> one forward predicts 20 frames -> autoregressive rollout to 240 frames.
+    input_steps: int = 40
+    output_steps: int = 240
     stride: int = 4
     normalize: bool = True
     batch_size: int = 8
@@ -49,12 +47,6 @@ class SeaSurfaceRolloutConfig:
     n_epochs: int = 100
     early_stop_patience: int = 100
     grad_clip_norm: float = 1.0
-
-    # Match the FNO-UNet training loss switches so ConvLSTM can be compared under
-    # the same long-rollout and local-gradient constraints.
-    use_spatial_gradient_loss: bool = False
-    spatial_gradient_loss_weight: float = 0.05
-
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -72,14 +64,16 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # rollout training design
     # -------------------------
-    use_long_rollout_curriculum: bool = True
-    rollout_train_steps: tuple = (30, 60, 120, 180, 240, 300)
-    rollout_curriculum_boundaries: tuple = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6)
-    rollout_steps: int = 300
+    use_long_rollout_curriculum: bool = False
+    # rollout_train_steps: tuple = (20, 40, 80, 120, 160, 240)
+    # rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
+    rollout_train_steps: tuple = (240,)
+    rollout_curriculum_boundaries: tuple = (0.0,)
+    rollout_steps: int = 240
     rollout_stride: int = 4
     rollout_detach_context: bool = True
 
-    use_segment_weighting: bool = False
+    use_segment_weighting: bool = True
     segment_weight_type: str = "linear"  # none / linear / power / exp
     segment_weight_min: float = 1.0
     segment_weight_max: float = 2.5
@@ -102,7 +96,7 @@ class SeaSurfaceRolloutConfig:
     spectral_high_k_ratio: float = 0.67
     spectral_band_split_ratios: tuple = (0.33, 0.67, 0.85)
     plot_num_samples: int = 3
-    plot_future_steps: tuple = (59, 149, 299)
+    plot_future_steps: tuple = (19, 59, 119, 239)
     denormalize_for_plot: bool = True
 
     # -------------------------

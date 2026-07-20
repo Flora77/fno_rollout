@@ -11,7 +11,7 @@ if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
 
 from neuralop.data.datasets.sea_surface_simple import SeaSurfaceSimpleDataset
-from config.sea_surface_rollout_config import SeaSurfaceRolloutConfig
+from config.sea_surface_rollout_config_fno_unet_aunet_gated import SeaSurfaceRolloutConfig
 
 
 def ensure_dir(path: str) -> None:

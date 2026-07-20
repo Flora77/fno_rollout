@@ -10,49 +10,53 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     data_root: str = "./data/bimodal"
     variable: str = "height"
-
-    # Fair-comparison rollout setting, aligned with the FNO-UNet metrics config:
-    # 60 input frames -> one forward predicts 30 frames -> autoregressive rollout to 300 frames.
-    # Keep batch_size smaller than FNO-UNet by default because ConvLSTM backpropagates through
-    # recurrent spatial states and may use more memory during long-rollout training.
-    input_steps: int = 60
-    output_steps: int = 30
+    input_steps: int = 40
+    output_steps: int = 20
     stride: int = 4
     normalize: bool = True
-    batch_size: int = 8
-    val_batch_size: int = 8
-    test_batch_size: int = 8
+    batch_size: int = 16
+    val_batch_size: int = 16
+    test_batch_size: int = 16
     num_workers: int = 0
+    # batch_size: int = 8
+    # val_batch_size: int = 8
+    # test_batch_size: int = 8
+    # num_workers: int = 4
     pin_memory: bool = True
 
     # -------------------------
     # model
     # -------------------------
-    model_arch: str = "convlstm"
+    model_arch: str = "fno_unet_decoder"  # fno / tfno / fno_unet_decoder
+    n_modes: tuple = (32, 32)
+    # n_modes: tuple = (28, 28)
 
-    # Paper comparison: ConvLSTM with 4/2 convolutional recurrent layers and 128/64/32 channels.
-    # In this 2D rollout code, input tensor is [B, T_in, H, W]. ConvLSTM treats T_in as time,
-    # and each sea-surface frame has one channel.
-    convlstm_input_channels: int = 1
-    convlstm_hidden_channels: int = 32
-    convlstm_num_layers: int = 2
-    convlstm_kernel_size: int = 3
-    convlstm_bias: bool = True
-    convlstm_output_kernel_size: int = 1
-    convlstm_decoder_input: str = "last"  # last / zero
+    hidden_channels: int = 32
+    lifting_channels: int = 64
+    projection_channels: int = 64
+    n_layers: int = 4
+
+    # FNO + U-Net Decoder / residual refiner
+    # coarse = FNO(x), residual = U-Net([x, coarse]), pred = coarse + residual
+    fno_unet_base_channels: int = 32
+    fno_unet_depth: int = 3
+    fno_unet_decoder_dropout: float = 0.0
+    fno_unet_use_context: bool = True
+    fno_unet_use_residual: bool = True
+    fno_unet_residual_scale: float = 1.0
 
     # -------------------------
     # optimization
     # -------------------------
+    # learning_rate: float = 1e-3
     learning_rate: float = 5e-4
     weight_decay: float = 1e-4
     n_epochs: int = 100
     early_stop_patience: int = 100
     grad_clip_norm: float = 1.0
-
-    # Match the FNO-UNet training loss switches so ConvLSTM can be compared under
-    # the same long-rollout and local-gradient constraints.
-    use_spatial_gradient_loss: bool = False
+    # Optional auxiliary loss for sharper local wave slopes.
+    # Total chunk loss = MSE + spatial_gradient_loss_weight * gradient_MSE.
+    use_spatial_gradient_loss: bool = True
     spatial_gradient_loss_weight: float = 0.05
 
     seed: int = 42
@@ -60,26 +64,32 @@ class SeaSurfaceRolloutConfig:
 
     # lr scheduler
     use_lr_scheduler: bool = True
-    lr_scheduler_type: str = "cosine"     # step / cosine / plateau
+    lr_scheduler_type: str = "cosine"     # "step" / "cosine" / "plateau"
     lr_scheduler_step_size: int = 20
     lr_scheduler_gamma: float = 0.5
-    lr_scheduler_t_max: int = n_epochs
-    lr_scheduler_eta_min: float = 1e-6
-    lr_scheduler_patience: int = 10
-    lr_scheduler_factor: float = 0.5
+    lr_scheduler_t_max: int = n_epochs    # cosine 用
+    lr_scheduler_eta_min: float = 1e-6    # cosine 最小学习率
+    lr_scheduler_patience: int = 10        # plateau 用
+    lr_scheduler_factor: float = 0.5      # plateau 用
     lr_scheduler_min_lr: float = 1e-6
 
     # -------------------------
     # rollout training design
     # -------------------------
     use_long_rollout_curriculum: bool = True
-    rollout_train_steps: tuple = (30, 60, 120, 180, 240, 300)
-    rollout_curriculum_boundaries: tuple = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6)
-    rollout_steps: int = 300
+    rollout_train_steps: tuple = (20, 40, 80, 120, 160, 240)
+    rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
+    # rollout_train_steps = (40, 80, 160, 240, 320, 480)
+    # rollout_curriculum_boundaries = (0.0, 0.10, 0.25, 0.40, 0.60, 0.75)
+    # rollout_train_steps = (16,)
+    # rollout_curriculum_boundaries =(0.0,)               
+    # rollout_train_steps: tuple = (16, 32, 48, 64, 80, 90)
+    # rollout_curriculum_boundaries: tuple = (0.0, 0.10, 0.20, 0.30, 0.45, 0.60)
+    rollout_steps: int = 240
     rollout_stride: int = 4
-    rollout_detach_context: bool = True
+    rollout_detach_context: bool = False
 
-    use_segment_weighting: bool = False
+    use_segment_weighting: bool = True
     segment_weight_type: str = "linear"  # none / linear / power / exp
     segment_weight_min: float = 1.0
     segment_weight_max: float = 2.5
@@ -102,13 +112,14 @@ class SeaSurfaceRolloutConfig:
     spectral_high_k_ratio: float = 0.67
     spectral_band_split_ratios: tuple = (0.33, 0.67, 0.85)
     plot_num_samples: int = 3
-    plot_future_steps: tuple = (59, 149, 299)
+    plot_future_steps: tuple = (19,59,119)
     denormalize_for_plot: bool = True
 
     # -------------------------
     # experiment / io
     # -------------------------
-    experiment_name: str = "bimodal_convlstm"
+    # experiment_name: str = "random_phase_Tp_sp_rollout_lr5e-4"
+    experiment_name: str = "bimodal_fno_unet_decoder_rollout240"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"

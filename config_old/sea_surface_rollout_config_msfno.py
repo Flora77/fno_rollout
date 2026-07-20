@@ -11,35 +11,65 @@ class SeaSurfaceRolloutConfig:
     data_root: str = "./data/bimodal"
     variable: str = "height"
 
-    # Fair-comparison rollout setting, aligned with the FNO-UNet metrics config:
-    # 60 input frames -> one forward predicts 30 frames -> autoregressive rollout to 300 frames.
-    # Keep batch_size smaller than FNO-UNet by default because ConvLSTM backpropagates through
-    # recurrent spatial states and may use more memory during long-rollout training.
+    # RNO/MSFNO-RNO setting:
+    # 40 input frames -> one forward predicts 20 frames -> autoregressive rollout to 240 frames.
     input_steps: int = 60
     output_steps: int = 30
     stride: int = 4
     normalize: bool = True
-    batch_size: int = 8
-    val_batch_size: int = 8
-    test_batch_size: int = 8
+    batch_size: int = 16
+    val_batch_size: int = 16
+    test_batch_size: int = 16
     num_workers: int = 0
     pin_memory: bool = True
 
     # -------------------------
     # model
     # -------------------------
-    model_arch: str = "convlstm"
+    # fno / tfno / msfno
+    model_arch: str = "msfno"
 
-    # Paper comparison: ConvLSTM with 4/2 convolutional recurrent layers and 128/64/32 channels.
-    # In this 2D rollout code, input tensor is [B, T_in, H, W]. ConvLSTM treats T_in as time,
-    # and each sea-surface frame has one channel.
-    convlstm_input_channels: int = 1
-    convlstm_hidden_channels: int = 32
-    convlstm_num_layers: int = 2
-    convlstm_kernel_size: int = 3
-    convlstm_bias: bool = True
-    convlstm_output_kernel_size: int = 1
-    convlstm_decoder_input: str = "last"  # last / zero
+    # Base FNO settings used by each MSFNO branch.
+    # The paper commonly uses 32 spatial modes on a 64x64 grid; if GPU memory is tight, use (28, 28).
+    n_modes: tuple = (32, 32)
+    hidden_channels: int = 32
+    lifting_channels: int = 64
+    projection_channels: int = 64
+    n_layers: int = 4
+
+    # -------------------------
+    # MSFNO settings
+    # -------------------------
+    # Paper-style multi-scale branches. Main paper setting for N branches:
+    #     c_i = {0.5, 1, 2, 4, ..., 2^(N-2)}
+    # For N=4 this is (0.5, 1, 2, 4). Appendix B also tests (1, 2, 4, 8).
+    msfno_branch_arch: str = "fno"       # fno / tfno
+    msfno_scales: tuple = (0.5, 1.0, 2.0, 4.0)
+
+    # To keep parameter count comparable with a width=32 single FNO, each branch uses width≈16.
+    # For a larger paper-style setting, try msfno_scales=(0.5,1,2,4,8,16,32,64) and width_factor=1.0.
+    msfno_branch_width_factor: float = 0.5
+    msfno_branch_hidden_channels: int = 0       # 0 -> hidden_channels * factor
+    msfno_branch_lifting_channels: int = 0      # 0 -> lifting_channels * factor
+    msfno_branch_projection_channels: int = 0   # 0 -> projection_channels * factor
+
+    # Complete paper-style scaling adapted to this 2D-FNO code:
+    #     branch input z_i = [c_i * eta, c_i * x, c_i * y].
+    msfno_scale_input_field: bool = True  # 缩放输入幅值
+    msfno_add_scaled_coords: bool = True  # 在输入中添加坐标分量
+    msfno_scale_coordinates: bool = True  # 缩放坐标范围
+    msfno_coord_range: tuple = (0.0, 1.0) # 坐标缩放范围
+    msfno_output_scale: bool = False      # 是否缩放输出
+    msfno_branch_positional_embedding: object = None # 是否使用位置编码
+
+    # fusion = conv follows the paper's CNN-filter idea.
+    # Alternatives for ablation: weighted_sum / mean /conv
+    msfno_fusion: str = "conv"
+    # msfno_conv_hidden_channels: tuple = (32, 64, 32)
+    msfno_conv_hidden_channels: tuple = (8, 8)
+    msfno_conv_kernel_size: tuple = (3, 3, 3)
+    msfno_conv_norm: str = "batch"       # batch / instance / none
+    msfno_conv_activation: str = "relu"  # relu / gelu / silu / sin / none
 
     # -------------------------
     # optimization
@@ -49,12 +79,6 @@ class SeaSurfaceRolloutConfig:
     n_epochs: int = 100
     early_stop_patience: int = 100
     grad_clip_norm: float = 1.0
-
-    # Match the FNO-UNet training loss switches so ConvLSTM can be compared under
-    # the same long-rollout and local-gradient constraints.
-    use_spatial_gradient_loss: bool = False
-    spatial_gradient_loss_weight: float = 0.05
-
     seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -74,12 +98,12 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     use_long_rollout_curriculum: bool = True
     rollout_train_steps: tuple = (30, 60, 120, 180, 240, 300)
-    rollout_curriculum_boundaries: tuple = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6)
+    rollout_curriculum_boundaries: tuple = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6) 
     rollout_steps: int = 300
     rollout_stride: int = 4
-    rollout_detach_context: bool = True
+    rollout_detach_context: bool = False
 
-    use_segment_weighting: bool = False
+    use_segment_weighting: bool = True
     segment_weight_type: str = "linear"  # none / linear / power / exp
     segment_weight_min: float = 1.0
     segment_weight_max: float = 2.5
@@ -108,7 +132,7 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # experiment / io
     # -------------------------
-    experiment_name: str = "bimodal_convlstm"
+    experiment_name: str = "msfno_R300"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"

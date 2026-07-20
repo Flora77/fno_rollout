@@ -27,7 +27,7 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # model
     # -------------------------
-    model_arch: str = "fno"  # fno / tfno
+    model_arch: str = "fno_cnn"  # fno / tfno / fno_cnn / tfno_cnn
     n_modes: tuple = (32, 32)
     # n_modes: tuple = (28, 28)
 
@@ -35,6 +35,24 @@ class SeaSurfaceRolloutConfig:
     lifting_channels: int = 64
     projection_channels: int = 64
     n_layers: int = 4
+
+    # FNO + CNN local refiner
+    # fno_cnn = FNO coarse prediction + CNN residual correction in physical space.
+    fno_cnn_backbone_arch: str = "fno"       # fno / tfno
+    fno_cnn_base_channels: int = 32          # CNN hidden channels. 32 is a light default.
+    fno_cnn_depth: int = 4                   # Number of hidden Conv2d blocks.
+    fno_cnn_kernel_size: int = 3             # Local spatial stencil size.
+    fno_cnn_dilation: int = 1                # >1 enlarges local receptive field.
+    fno_cnn_dropout: float = 0.0             # Usually 0.0 for deterministic regression.
+    fno_cnn_use_context: bool = True         # CNN sees both input context and FNO output.
+    fno_cnn_use_residual: bool = True        # Predict correction instead of full field.
+    fno_cnn_residual_scale: float = 0.2      # Safer for long rollout. Try 0.1/0.2/0.5/1.0.
+    fno_cnn_zero_init_last: bool = True      # Start close to original FNO baseline.
+
+    # Optional local-slope loss for sharper crests/troughs and high-k correction.
+    use_spatial_gradient_loss: bool = True
+    spatial_gradient_loss_weight: float = 0.05
+    spatial_gradient_loss_type: str = "mse"  # mse / l1
 
     # -------------------------
     # optimization
@@ -90,19 +108,6 @@ class SeaSurfaceRolloutConfig:
     normalize_chunk_time_weights: bool = True
 
     # -------------------------
-    # residual prediction
-    # -------------------------
-    # True: model learns residual DeltaY, and final prediction is base(X) + DeltaY.
-    # False: original behavior, model directly predicts absolute future fields.
-    use_residual_prediction: bool = True
-
-    # Supported modes:
-    #   "last"   : base_{t+k} = eta_t
-    #   "linear" : base_{t+k} = eta_t + k/lag * (eta_t - eta_{t-lag})
-    residual_base_mode: str = "last"
-    residual_linear_lag: int = 4
-
-    # -------------------------
     # evaluation / plotting
     # -------------------------
     dt: float = 0.25
@@ -118,7 +123,7 @@ class SeaSurfaceRolloutConfig:
     # experiment / io
     # -------------------------
     # experiment_name: str = "random_phase_Tp_sp_rollout_lr5e-4"
-    experiment_name: str = "test_residual_last"
+    experiment_name: str = "fno_cnn_rollout240"
     checkpoint_dir: str = "./checkpoints"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"

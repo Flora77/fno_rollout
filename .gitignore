@@ -88,6 +88,8 @@ target/
 *.gif
 *.npz
 *.zip
+*.pdf
+*.svg
 collected_JONS_gamma_mat/
 collected_JONS_simple_mat/
 checkpoints/

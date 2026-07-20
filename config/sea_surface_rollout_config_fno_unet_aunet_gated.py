@@ -10,36 +10,56 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     data_root: str = "./data/bimodal"
     variable: str = "height"
-
-    # Fair-comparison rollout setting, aligned with the FNO-UNet metrics config:
-    # 60 input frames -> one forward predicts 30 frames -> autoregressive rollout to 300 frames.
-    # Keep batch_size smaller than FNO-UNet by default because ConvLSTM backpropagates through
-    # recurrent spatial states and may use more memory during long-rollout training.
     input_steps: int = 60
     output_steps: int = 30
     stride: int = 4
     normalize: bool = True
-    batch_size: int = 8
-    val_batch_size: int = 8
-    test_batch_size: int = 8
+    batch_size: int = 16
+    val_batch_size: int = 16
+    test_batch_size: int = 16
     num_workers: int = 0
     pin_memory: bool = True
 
     # -------------------------
     # model
     # -------------------------
-    model_arch: str = "convlstm"
+    # Options:
+    #   fno / tfno
+    #   fno_unet_gated_decoder   : FNO + single periodic U-Net residual correction
+    #   fno_aunet_gated_decoder  : FNO + single periodic Attention U-Net residual correction
+    model_arch: str = "fno_unet_gated_decoder"
+    n_modes: tuple = (28, 28)
+    hidden_channels: int = 32
+    lifting_channels: int = 64
+    projection_channels: int = 64
+    n_layers: int = 4
 
-    # Paper comparison: ConvLSTM with 4/2 convolutional recurrent layers and 128/64/32 channels.
-    # In this 2D rollout code, input tensor is [B, T_in, H, W]. ConvLSTM treats T_in as time,
-    # and each sea-surface frame has one channel.
-    convlstm_input_channels: int = 1
-    convlstm_hidden_channels: int = 32
-    convlstm_num_layers: int = 2
-    convlstm_kernel_size: int = 3
-    convlstm_bias: bool = True
-    convlstm_output_kernel_size: int = 1
-    convlstm_decoder_input: str = "last"  # last / zero
+    # FNO + single U-Net/AU-Net + gated residual
+    # coarse = FNO(x)
+    # z = [x, coarse] if use_context else coarse
+    # residual = UNet(z) or AttentionUNet(z)
+    # pred = coarse + residual_scale * sigmoid(GateNet(z)) * residual
+    fno_unet_fno_arch: str = "fno"
+    fno_unet_refiner_type: str = "unet"  # "unet" or "aunet"; model_arch has priority
+    fno_unet_depth: int = 3
+    fno_unet_base_channels: int = 32
+    fno_unet_decoder_dropout: float = 0.0
+    fno_unet_use_context: bool = True
+    fno_unet_use_residual: bool = True
+    fno_unet_residual_scale: float = 1.0
+
+    # Gated residual: adaptive correction strength in space and predicted time channel.
+    # 0.0 -> initial gate about 0.5; -1.0 -> more conservative initial gate about 0.27.
+    fno_unet_use_gated_residual: bool = False
+    fno_unet_gate_hidden_channels: int = 32
+    fno_unet_gate_bias_init: float = 0.0
+
+    # AU-Net attention gate. None/0 means automatic: min(gate_channels, skip_channels)//2.
+    fno_aunet_attention_inter_channels: object = None
+
+    # Periodic padding in all CNN/U-Net/Gate convolution blocks.
+    # Options: "periodic"/"circular", "zero", "reflect".
+    fno_unet_padding_mode: str = "periodic"
 
     # -------------------------
     # optimization
@@ -50,9 +70,8 @@ class SeaSurfaceRolloutConfig:
     early_stop_patience: int = 100
     grad_clip_norm: float = 1.0
 
-    # Match the FNO-UNet training loss switches so ConvLSTM can be compared under
-    # the same long-rollout and local-gradient constraints.
-    use_spatial_gradient_loss: bool = False
+    # Auxiliary slope loss. Keeps local wave slopes/high-wavenumber details from being over-smoothed.
+    use_spatial_gradient_loss: bool = True
     spatial_gradient_loss_weight: float = 0.05
 
     seed: int = 42
@@ -60,7 +79,7 @@ class SeaSurfaceRolloutConfig:
 
     # lr scheduler
     use_lr_scheduler: bool = True
-    lr_scheduler_type: str = "cosine"     # step / cosine / plateau
+    lr_scheduler_type: str = "cosine"     # "step" / "cosine" / "plateau"
     lr_scheduler_step_size: int = 20
     lr_scheduler_gamma: float = 0.5
     lr_scheduler_t_max: int = n_epochs
@@ -77,9 +96,9 @@ class SeaSurfaceRolloutConfig:
     rollout_curriculum_boundaries: tuple = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6)
     rollout_steps: int = 300
     rollout_stride: int = 4
-    rollout_detach_context: bool = True
+    rollout_detach_context: bool = False
 
-    use_segment_weighting: bool = False
+    use_segment_weighting: bool = True
     segment_weight_type: str = "linear"  # none / linear / power / exp
     segment_weight_min: float = 1.0
     segment_weight_max: float = 2.5
@@ -100,7 +119,7 @@ class SeaSurfaceRolloutConfig:
     evaluation_num_full_samples_to_save: int = 3
     evaluation_num_trace_points: int = 5
     spectral_high_k_ratio: float = 0.67
-    spectral_band_split_ratios: tuple = (0.33, 0.67, 0.85)
+    spectral_band_split_ratios: tuple = (0.33, 0.67, 0.85)  # only for validation spectrum statistics
     plot_num_samples: int = 3
     plot_future_steps: tuple = (59, 149, 299)
     denormalize_for_plot: bool = True
@@ -108,8 +127,8 @@ class SeaSurfaceRolloutConfig:
     # -------------------------
     # experiment / io
     # -------------------------
-    experiment_name: str = "bimodal_convlstm"
-    checkpoint_dir: str = "./checkpoints"
+    experiment_name: str = "mode_m28x28_h32_lp64"
+    checkpoint_dir: str = "./checkpoints/hparam_sensitivity"
     log_dirname: str = "logs"
     plot_dirname: str = "plots"
     train_summary_csv: str = "ablation_train_summary.csv"

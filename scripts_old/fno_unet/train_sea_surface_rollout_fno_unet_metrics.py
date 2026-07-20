@@ -1,0 +1,832 @@
+import csv
+import argparse
+import inspect
+import json
+import logging
+import math
+import os
+import random
+import time
+from datetime import datetime
+from typing import Any, Dict, List, Sequence, Tuple
+import sys
+import numpy as np
+import torch
+import torch.nn as nn
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+from pathlib import Path
+
+def _find_project_root(start_file: Path) -> Path:
+    """Find project root containing both neuralop/ and config/."""
+    start = start_file.resolve()
+    for parent in [start.parent, *start.parents]:
+        if (parent / "neuralop").exists() and (parent / "config").exists():
+            return parent
+    # Fallback compatible with the original scripts placed under scripts/*/.
+    return start.parent.parent.parent
+
+project_root = _find_project_root(Path(__file__))
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
+from neuralop.data.datasets.sea_surface_simple import SeaSurfaceSimpleDataset
+from config.sea_surface_rollout_config_fno_unet_aunet_gated import SeaSurfaceRolloutConfig
+from torch.optim.lr_scheduler import StepLR, CosineAnnealingLR, ReduceLROnPlateau
+
+try:
+    from neuralop.models.fno import FNO, TFNO
+    from neuralop.models.fno_unet_aunet_gated_decoder import FNOGlobalUNetGatedDecoder
+except ImportError as e:
+    raise ImportError("Please install neuralop before running this script.") from e
+
+
+def set_seed(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+
+def get_device(device_str: str) -> torch.device:
+    if device_str == "cuda" and torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
+
+
+def sync_if_cuda(device: torch.device) -> None:
+    """Synchronize CUDA before/after timing because GPU kernels are asynchronous."""
+    if isinstance(device, torch.device) and device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.synchronize(device)
+
+
+def reset_peak_memory_stats(device: torch.device) -> None:
+    if isinstance(device, torch.device) and device.type == "cuda" and torch.cuda.is_available():
+        torch.cuda.reset_peak_memory_stats(device)
+
+
+def get_peak_memory_allocated_mb(device: torch.device) -> float:
+    if isinstance(device, torch.device) and device.type == "cuda" and torch.cuda.is_available():
+        return float(torch.cuda.max_memory_allocated(device) / 1024**2)
+    return 0.0
+
+
+def bytes_to_mb(num_bytes: int) -> float:
+    return float(num_bytes) / 1024**2
+
+
+def get_file_size_mb(path: str) -> float:
+    if path and os.path.exists(path):
+        return bytes_to_mb(os.path.getsize(path))
+    return float("nan")
+
+
+def count_parameters(model: nn.Module) -> Dict[str, int]:
+    total_params = int(sum(p.numel() for p in model.parameters()))
+    trainable_params = int(sum(p.numel() for p in model.parameters() if p.requires_grad))
+    return {
+        "total_params": total_params,
+        "trainable_params": trainable_params,
+        "non_trainable_params": total_params - trainable_params,
+    }
+
+
+def get_state_dict_size_bytes(model: nn.Module) -> int:
+    total_bytes = 0
+    for value in model.state_dict().values():
+        if torch.is_tensor(value):
+            total_bytes += int(value.numel() * value.element_size())
+    return int(total_bytes)
+
+
+def summarize_model_size(model: nn.Module) -> Dict[str, float]:
+    params = count_parameters(model)
+    state_dict_size_bytes = get_state_dict_size_bytes(model)
+    return {
+        **params,
+        "total_params_m": params["total_params"] / 1e6,
+        "trainable_params_m": params["trainable_params"] / 1e6,
+        "state_dict_size_mb": bytes_to_mb(state_dict_size_bytes),
+        "trainable_params_fp32_size_mb": bytes_to_mb(params["trainable_params"] * 4),
+    }
+
+def build_scheduler(optimizer, config):
+    if not getattr(config, "use_lr_scheduler", False):
+        return None
+    scheduler_type = str(getattr(config, "lr_scheduler_type", "cosine")).lower()
+    if scheduler_type == "step":
+        return StepLR(
+            optimizer,
+            step_size=int(config.lr_scheduler_step_size),
+            gamma=float(config.lr_scheduler_gamma),
+        )
+    if scheduler_type == "cosine":
+        return CosineAnnealingLR(
+            optimizer,
+            T_max=int(config.lr_scheduler_t_max),
+            eta_min=float(config.lr_scheduler_eta_min),
+        )
+    if scheduler_type == "plateau":
+        return ReduceLROnPlateau(
+            optimizer,
+            mode="min",
+            factor=float(config.lr_scheduler_factor),
+            patience=int(config.lr_scheduler_patience),
+            min_lr=float(config.lr_scheduler_min_lr),
+        )
+    raise ValueError(f"Unsupported lr_scheduler_type: {config.lr_scheduler_type}")
+
+def get_current_lr(optimizer) -> float:
+    return float(optimizer.param_groups[0]["lr"])
+
+def setup_logger(config: SeaSurfaceRolloutConfig) -> logging.Logger:
+    ensure_dir(config.log_dir)
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    log_path = os.path.join(config.log_dir, f"{config.experiment_name}_{timestamp}.log")
+
+    logger = logging.getLogger(config.experiment_name)
+    logger.setLevel(logging.INFO)
+    logger.handlers.clear()
+    logger.propagate = False
+
+    formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setFormatter(formatter)
+    sh = logging.StreamHandler()
+    sh.setFormatter(formatter)
+    logger.addHandler(fh)
+    logger.addHandler(sh)
+    logger.info("Logging to %s", log_path)
+    return logger
+
+
+def append_csv_row(csv_path: str, row: Dict[str, Any]) -> None:
+    """Append one row to CSV, expanding old headers when new metric columns are added."""
+    ensure_dir(os.path.dirname(csv_path) or ".")
+    row = {str(k): v for k, v in dict(row).items()}
+
+    if not os.path.exists(csv_path) or os.path.getsize(csv_path) == 0:
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()), extrasaction="ignore")
+            writer.writeheader()
+            writer.writerow(row)
+        return
+
+    with open(csv_path, "r", newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        old_fieldnames = [str(k) for k in (reader.fieldnames or []) if k is not None]
+        old_rows = list(reader)
+
+    new_keys = [k for k in row.keys() if k not in old_fieldnames]
+    fieldnames = old_fieldnames + new_keys
+
+    cleaned_old_rows = []
+    for old_row in old_rows:
+        old_row = dict(old_row)
+        old_row.pop(None, None)
+        cleaned = {k: old_row.get(k, "") for k in fieldnames}
+        cleaned_old_rows.append(cleaned)
+
+    with open(csv_path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for old_row in cleaned_old_rows:
+            writer.writerow(old_row)
+        writer.writerow(row)
+
+
+def _filter_model_kwargs(model_cls, kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    sig = inspect.signature(model_cls)
+    return {k: v for k, v in kwargs.items() if v is not None and k in sig.parameters}
+
+
+def _resolve_decoder_type(config: SeaSurfaceRolloutConfig) -> str:
+    arch = str(config.model_arch).lower()
+    if arch in {"fno_aunet_gated_decoder", "fno_attention_unet_gated_decoder"}:
+        return "aunet"
+    if arch in {"fno_unet_gated_decoder", "fno_global_unet_gated_decoder"}:
+        return "unet"
+    return str(getattr(config, "fno_unet_refiner_type", "unet")).lower()
+
+
+def _optional_int(value):
+    if value is None:
+        return None
+    try:
+        value_int = int(value)
+    except (TypeError, ValueError):
+        return None
+    return value_int if value_int > 0 else None
+
+
+def build_model(config: SeaSurfaceRolloutConfig) -> nn.Module:
+    arch = str(config.model_arch).lower()
+
+    if arch in {
+        "fno_unet_gated_decoder",
+        "fno_aunet_gated_decoder",
+        "fno_attention_unet_gated_decoder",
+        "fno_global_unet_gated_decoder",
+    }:
+        return FNOGlobalUNetGatedDecoder(
+            n_modes=tuple(config.n_modes),
+            hidden_channels=int(config.hidden_channels),
+            in_channels=int(config.input_steps),
+            out_channels=int(config.output_steps),
+            n_layers=int(config.n_layers),
+            lifting_channels=int(config.lifting_channels),
+            projection_channels=int(config.projection_channels),
+            fno_arch=str(getattr(config, "fno_unet_fno_arch", "fno")),
+            decoder_type=_resolve_decoder_type(config),
+            decoder_base_channels=int(getattr(config, "fno_unet_base_channels", 32)),
+            unet_depth=int(getattr(config, "fno_unet_depth", 3)),
+            unet_dropout=float(getattr(config, "fno_unet_decoder_dropout", 0.0)),
+            use_context=bool(getattr(config, "fno_unet_use_context", True)),
+            use_residual=bool(getattr(config, "fno_unet_use_residual", True)),
+            residual_scale=float(getattr(config, "fno_unet_residual_scale", 1.0)),
+            use_gated_residual=bool(getattr(config, "fno_unet_use_gated_residual", True)),
+            gate_hidden_channels=int(getattr(config, "fno_unet_gate_hidden_channels", 32)),
+            gate_bias_init=float(getattr(config, "fno_unet_gate_bias_init", 0.0)),
+            attention_inter_channels=_optional_int(getattr(config, "fno_aunet_attention_inter_channels", None)),
+            padding_mode=str(getattr(config, "fno_unet_padding_mode", "periodic")),
+        )
+
+    if arch == "fno":
+        model_cls = FNO
+    elif arch == "tfno":
+        model_cls = TFNO
+    else:
+        raise ValueError(f"Unsupported model_arch: {config.model_arch}")
+
+    kwargs = dict(
+        n_modes=tuple(config.n_modes),
+        hidden_channels=int(config.hidden_channels),
+        in_channels=int(config.input_steps),
+        out_channels=int(config.output_steps),
+        n_layers=int(config.n_layers),
+        lifting_channels=int(config.lifting_channels),
+        projection_channels=int(config.projection_channels),
+    )
+    return model_cls(**_filter_model_kwargs(model_cls, kwargs))
+
+
+def build_dataloaders(
+    config: SeaSurfaceRolloutConfig,
+    train_target_steps: int,
+    val_rollout_steps: int,
+) -> Tuple[SeaSurfaceSimpleDataset, DataLoader, DataLoader]:
+    train_dir = os.path.join(config.data_root, "train")
+    val_dir = os.path.join(config.data_root, "val")
+
+    train_dataset = SeaSurfaceSimpleDataset(
+        data_dir=train_dir,
+        variable=config.variable,
+        input_steps=int(config.input_steps),
+        output_steps=int(train_target_steps),
+        stride=int(config.stride),
+        normalize=bool(config.normalize),
+    )
+    val_dataset = SeaSurfaceSimpleDataset(
+        data_dir=val_dir,
+        variable=config.variable,
+        input_steps=int(config.input_steps),
+        output_steps=int(val_rollout_steps),
+        stride=int(config.rollout_stride),
+        normalize=bool(config.normalize),
+        mean=train_dataset.mean if config.normalize else None,
+        std=train_dataset.std if config.normalize else None,
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=int(config.batch_size),
+        shuffle=True,
+        num_workers=int(config.num_workers),
+        pin_memory=bool(config.pin_memory),
+    )
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=int(config.val_batch_size),
+        shuffle=False,
+        num_workers=int(config.num_workers),
+        pin_memory=bool(config.pin_memory),
+    )
+    return train_dataset, train_loader, val_loader
+
+
+def build_time_weights(num_steps: int, config: SeaSurfaceRolloutConfig, device: torch.device) -> torch.Tensor:
+    if (not config.use_within_chunk_temporal_weighting) or str(config.chunk_time_weight_type).lower() == "none":
+        w = torch.ones(num_steps, device=device, dtype=torch.float32)
+    else:
+        weight_type = str(config.chunk_time_weight_type).lower()
+        if weight_type == "linear":
+            w = torch.linspace(float(config.chunk_time_weight_min), float(config.chunk_time_weight_max), steps=num_steps, device=device)
+        elif weight_type == "power":
+            x = torch.linspace(0.0, 1.0, steps=num_steps, device=device)
+            w = float(config.chunk_time_weight_min) + (float(config.chunk_time_weight_max) - float(config.chunk_time_weight_min)) * (x ** float(config.chunk_time_weight_power))
+        elif weight_type == "exp":
+            min_w = max(float(config.chunk_time_weight_min), 1e-8)
+            max_w = max(float(config.chunk_time_weight_max), 1e-8)
+            growth = math.log(max_w / min_w) / max(num_steps - 1, 1)
+            idx = torch.arange(num_steps, device=device, dtype=torch.float32)
+            w = min_w * torch.exp(growth * idx)
+        else:
+            raise ValueError(f"Unsupported chunk_time_weight_type: {config.chunk_time_weight_type}")
+    if config.normalize_chunk_time_weights:
+        w = w / w.mean().clamp(min=1e-8)
+    return w.view(1, num_steps, 1, 1)
+
+
+def build_segment_weights(num_segments: int, config: SeaSurfaceRolloutConfig, device: torch.device) -> torch.Tensor:
+    if (not config.use_segment_weighting) or str(config.segment_weight_type).lower() == "none":
+        w = torch.ones(num_segments, device=device, dtype=torch.float32)
+    else:
+        min_w = float(config.segment_weight_min)
+        max_w = float(config.segment_weight_max)
+        weight_type = str(config.segment_weight_type).lower()
+        if weight_type == "linear":
+            w = torch.linspace(min_w, max_w, steps=num_segments, device=device)
+        elif weight_type == "power":
+            x = torch.linspace(0.0, 1.0, steps=num_segments, device=device)
+            w = min_w + (max_w - min_w) * (x ** float(config.segment_weight_power))
+        elif weight_type == "exp":
+            min_w = max(min_w, 1e-8)
+            max_w = max(max_w, 1e-8)
+            growth = math.log(max_w / min_w) / max(num_segments - 1, 1)
+            idx = torch.arange(num_segments, device=device, dtype=torch.float32)
+            w = min_w * torch.exp(growth * idx)
+        else:
+            raise ValueError(f"Unsupported segment_weight_type: {config.segment_weight_type}")
+    if config.normalize_segment_weights:
+        w = w / w.mean().clamp(min=1e-8)
+    return w
+
+
+def parse_rollout_train_steps(config: SeaSurfaceRolloutConfig) -> List[int]:
+    if not config.use_long_rollout_curriculum:
+        return [int(config.rollout_steps)]
+    steps = sorted({int(s) for s in config.rollout_train_steps if int(s) > 0})
+    return steps if steps else [int(config.rollout_steps)]
+
+
+def parse_curriculum_boundaries(num_stages: int, config: SeaSurfaceRolloutConfig) -> List[float]:
+    boundaries = [float(v) for v in config.rollout_curriculum_boundaries]
+    if len(boundaries) != num_stages:
+        if num_stages == 1:
+            return [0.0]
+        return [i / num_stages for i in range(num_stages)]
+    boundaries = sorted(boundaries)
+    boundaries[0] = 0.0
+    return boundaries
+
+
+def select_rollout_steps_for_epoch(epoch: int, n_epochs: int, rollout_steps_list: Sequence[int], boundaries: Sequence[float]) -> int:
+    if len(rollout_steps_list) == 1:
+        return int(rollout_steps_list[0])
+    progress = 0.0 if n_epochs <= 1 else float(epoch - 1) / float(max(n_epochs - 1, 1))
+    idx = 0
+    for i, b in enumerate(boundaries):
+        if progress >= b:
+            idx = i
+    idx = min(idx, len(rollout_steps_list) - 1)
+    return int(rollout_steps_list[idx])
+
+
+def rollout_forward_train(model: nn.Module, x_init: torch.Tensor, input_steps: int, one_shot_steps: int, rollout_steps: int, detach_context: bool) -> Tuple[List[torch.Tensor], List[int]]:
+    current_x = x_init
+    preds: List[torch.Tensor] = []
+    lengths: List[int] = []
+    generated = 0
+    while generated < rollout_steps:
+        pred_full = model(current_x)
+        take = min(one_shot_steps, rollout_steps - generated, pred_full.shape[1])
+        pred_use = pred_full[:, :take]
+        preds.append(pred_use)
+        lengths.append(int(take))
+        generated += take
+        context_chunk = pred_use.detach() if detach_context else pred_use
+        current_x = torch.cat([current_x, context_chunk], dim=1)[:, -input_steps:]
+    return preds, lengths
+
+
+def get_rollout_targets(y: torch.Tensor, lengths: Sequence[int]) -> List[torch.Tensor]:
+    targets = []
+    start = 0
+    for take in lengths:
+        end = start + int(take)
+        targets.append(y[:, start:end])
+        start = end
+    return targets
+
+
+def compute_weighted_mse(pred: torch.Tensor, target: torch.Tensor, time_weights: torch.Tensor) -> torch.Tensor:
+    return (((pred - target) ** 2) * time_weights).mean()
+
+
+def compute_spatial_gradient_mse(pred: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+    """MSE of spatial slopes. Helps reduce over-smoothing in high-wavenumber components."""
+    dx_pred = pred[..., :, 1:] - pred[..., :, :-1]
+    dx_tgt = target[..., :, 1:] - target[..., :, :-1]
+    dy_pred = pred[..., 1:, :] - pred[..., :-1, :]
+    dy_tgt = target[..., 1:, :] - target[..., :-1, :]
+    return ((dx_pred - dx_tgt) ** 2).mean() + ((dy_pred - dy_tgt) ** 2).mean()
+
+
+def compute_rollout_loss(preds: List[torch.Tensor], targets: List[torch.Tensor], segment_weights: torch.Tensor, config: SeaSurfaceRolloutConfig, time_weight_cache: Dict[int, torch.Tensor]) -> Tuple[torch.Tensor, Dict[str, float]]:
+    device = preds[0].device
+    total_loss = torch.zeros((), device=device, dtype=torch.float32)
+    sum_weights = segment_weights.sum().clamp(min=1e-8)
+    mse_values: List[float] = []
+    grad_values: List[float] = []
+
+    use_grad_loss = bool(getattr(config, "use_spatial_gradient_loss", False))
+    grad_weight = float(getattr(config, "spatial_gradient_loss_weight", 0.0))
+
+    for i, (pred_i, target_i) in enumerate(zip(preds, targets)):
+        take = int(pred_i.shape[1])
+        if take not in time_weight_cache:
+            time_weight_cache[take] = build_time_weights(take, config, device)
+
+        mse_i = compute_weighted_mse(pred_i.float(), target_i.float(), time_weight_cache[take])
+        loss_i = mse_i
+
+        if use_grad_loss and grad_weight > 0.0:
+            grad_i = compute_spatial_gradient_mse(pred_i.float(), target_i.float())
+            loss_i = loss_i + grad_weight * grad_i
+            grad_values.append(float(grad_i.detach().item()))
+
+        total_loss = total_loss + segment_weights[i] * loss_i
+        mse_values.append(float(mse_i.detach().item()))
+
+    total_loss = total_loss / sum_weights
+    return total_loss, {
+        "loss": float(total_loss.detach().item()),
+        "mse": float(np.mean(mse_values)),
+        "grad_mse": float(np.mean(grad_values)) if grad_values else 0.0,
+    }
+
+
+@torch.no_grad()
+def rollout_predict(model: nn.Module, x_init: torch.Tensor, rollout_steps: int, input_steps: int, one_shot_steps: int) -> torch.Tensor:
+    context = x_init.clone()
+    preds: List[torch.Tensor] = []
+    generated = 0
+    while generated < rollout_steps:
+        pred_chunk = model(context)
+        take = min(one_shot_steps, rollout_steps - generated, pred_chunk.shape[1])
+        pred_use = pred_chunk[:, :take]
+        preds.append(pred_use)
+        generated += take
+        context = torch.cat([context, pred_use], dim=1)[:, -input_steps:]
+    return torch.cat(preds, dim=1)
+
+
+@torch.no_grad()
+def evaluate_rollout(model: nn.Module, loader: DataLoader, device: torch.device, input_steps: int, one_shot_steps: int, rollout_steps: int) -> Dict[str, float]:
+    model.eval()
+    total_sq = 0.0
+    total_count = 0
+    total_rel = 0.0
+    total_samples = 0
+    final_sq = 0.0
+    final_count = 0
+    last_sq = 0.0
+    last_count = 0
+
+    rollout_infer_time_batch_list: List[float] = []
+    rollout_infer_time_total_sec = 0.0
+    rollout_infer_num_samples = 0
+    rollout_infer_num_batches = 0
+
+    for batch in loader:
+        x = batch["x"].to(device, non_blocking=True)
+        y = batch["y"].to(device, non_blocking=True)
+        bsz = int(x.shape[0])
+
+        sync_if_cuda(device)
+        infer_t0 = time.perf_counter()
+        pred = rollout_predict(model, x, rollout_steps, input_steps, one_shot_steps)
+        sync_if_cuda(device)
+        infer_dt = time.perf_counter() - infer_t0
+
+        rollout_infer_time_batch_list.append(float(infer_dt))
+        rollout_infer_time_total_sec += float(infer_dt)
+        rollout_infer_num_samples += bsz
+        rollout_infer_num_batches += 1
+        sq = (pred.float() - y.float()) ** 2
+        total_sq += sq.sum().item()
+        total_count += sq.numel()
+        total_samples += x.shape[0]
+
+        pred_flat = pred.view(pred.shape[0], -1)
+        y_flat = y.view(y.shape[0], -1)
+        total_rel += (torch.norm(pred_flat - y_flat, dim=1) / (torch.norm(y_flat, dim=1) + 1e-12)).sum().item()
+
+        final_sq += sq[:, -1].sum().item()
+        final_count += sq[:, -1].numel()
+
+        last_take = min(one_shot_steps, rollout_steps)
+        last_sq += sq[:, -last_take:].sum().item()
+        last_count += sq[:, -last_take:].numel()
+
+    rollout_mse = total_sq / max(total_count, 1)
+    final_mse = final_sq / max(final_count, 1)
+    last_mse = last_sq / max(last_count, 1)
+    infer_arr = np.asarray(rollout_infer_time_batch_list, dtype=np.float64)
+    rollout_infer_time_per_batch_sec = float(np.mean(infer_arr)) if infer_arr.size else float("nan")
+    rollout_infer_time_per_sample_sec = (
+        float(rollout_infer_time_total_sec / rollout_infer_num_samples)
+        if rollout_infer_num_samples > 0 else float("nan")
+    )
+    return {
+        "rollout_rmse": float(math.sqrt(rollout_mse)),
+        "final_step_rmse": float(math.sqrt(final_mse)),
+        "last_chunk_rmse": float(math.sqrt(last_mse)),
+        "rel_l2": float(total_rel / max(total_samples, 1)),
+        "rollout_infer_time_total_sec": float(rollout_infer_time_total_sec),
+        "rollout_infer_time_per_sample_sec": float(rollout_infer_time_per_sample_sec),
+        "rollout_infer_time_per_batch_sec": float(rollout_infer_time_per_batch_sec),
+        "rollout_infer_num_samples": int(rollout_infer_num_samples),
+        "rollout_infer_num_batches": int(rollout_infer_num_batches),
+        "rollout_infer_steps": int(rollout_steps),
+    }
+
+def apply_cli_overrides(config: SeaSurfaceRolloutConfig) -> SeaSurfaceRolloutConfig:
+    """Small CLI helper so the same file can train U-Net and AU-Net ablations."""
+    parser = argparse.ArgumentParser(description="Train FNO + single U-Net/AU-Net gated residual rollout model")
+    parser.add_argument("--model_arch", type=str, default=None,
+                        choices=["fno", "tfno", "fno_unet_gated_decoder", "fno_aunet_gated_decoder"])
+    parser.add_argument("--experiment_name", type=str, default=None)
+    parser.add_argument("--checkpoint_dir", type=str, default=None)
+    parser.add_argument("--base_channels", type=int, default=None)
+    parser.add_argument("--depth", type=int, default=None)
+    parser.add_argument("--use_gated_residual", type=int, default=None)
+    parser.add_argument("--gate_bias_init", type=float, default=None)
+    parser.add_argument("--n_epochs", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--learning_rate", type=float, default=None)
+    parser.add_argument("--n_modes", type=int, nargs=2, default=None, metavar=("KX", "KY"))
+    parser.add_argument("--hidden_channels", type=int, default=None)
+    parser.add_argument("--lifting_channels", type=int, default=None)
+    parser.add_argument("--projection_channels", type=int, default=None)
+    args = parser.parse_args()
+
+    if args.model_arch is not None:
+        config.model_arch = args.model_arch
+        config.fno_unet_refiner_type = "aunet" if "aunet" in args.model_arch else "unet"
+    if args.experiment_name is not None:
+        config.experiment_name = args.experiment_name
+    if args.checkpoint_dir is not None:
+        config.checkpoint_dir = args.checkpoint_dir
+    if args.base_channels is not None:
+        config.fno_unet_base_channels = int(args.base_channels)
+    if args.depth is not None:
+        config.fno_unet_depth = int(args.depth)
+    if args.use_gated_residual is not None:
+        config.fno_unet_use_gated_residual = bool(args.use_gated_residual)
+    if args.gate_bias_init is not None:
+        config.fno_unet_gate_bias_init = float(args.gate_bias_init)
+    if args.n_epochs is not None:
+        config.n_epochs = int(args.n_epochs)
+        if str(config.lr_scheduler_type).lower() == "cosine":
+            config.lr_scheduler_t_max = int(args.n_epochs)
+    if args.batch_size is not None:
+        config.batch_size = int(args.batch_size)
+    if args.learning_rate is not None:
+        config.learning_rate = float(args.learning_rate)
+    if args.n_modes is not None:
+        config.n_modes = tuple(int(v) for v in args.n_modes)
+    if args.hidden_channels is not None:
+        config.hidden_channels = int(args.hidden_channels)
+    if args.lifting_channels is not None:
+        config.lifting_channels = int(args.lifting_channels)
+    if args.projection_channels is not None:
+        config.projection_channels = int(args.projection_channels)
+    return config
+
+
+def main() -> None:
+    config = apply_cli_overrides(SeaSurfaceRolloutConfig())
+    ensure_dir(config.checkpoint_dir)
+    ensure_dir(config.plot_dir)
+    logger = setup_logger(config)
+    set_seed(int(config.seed))
+    device = get_device(config.device)
+
+    logger.info("Experiment: %s", config.experiment_name)
+    logger.info("Config: %s", json.dumps(config.__dict__, ensure_ascii=False, default=str))
+
+    model = build_model(config).to(device)
+    model_size_info = summarize_model_size(model)
+    logger.info(
+        "Model size | Params=%d (%.3f M) | Trainable=%d (%.3f M) | state_dict≈%.2f MB | trainable_fp32≈%.2f MB",
+        int(model_size_info["total_params"]),
+        float(model_size_info["total_params_m"]),
+        int(model_size_info["trainable_params"]),
+        float(model_size_info["trainable_params_m"]),
+        float(model_size_info["state_dict_size_mb"]),
+        float(model_size_info["trainable_params_fp32_size_mb"]),
+    )
+
+    optimizer = AdamW(model.parameters(), lr=float(config.learning_rate), weight_decay=float(config.weight_decay))
+    scheduler = build_scheduler(optimizer, config)
+
+
+    rollout_steps_list = parse_rollout_train_steps(config)
+    boundaries = parse_curriculum_boundaries(len(rollout_steps_list), config)
+
+    best_metric = float("inf")
+    best_epoch = 0
+    epochs_without_improve = 0
+    time_weight_cache: Dict[int, torch.Tensor] = {}
+
+    training_start_time = time.perf_counter()
+    epoch_train_time_list: List[float] = []
+    epoch_total_time_list: List[float] = []
+    train_peak_gpu_memory_mb_list: List[float] = []
+    best_time_to_best_sec = float("nan")
+    best_checkpoint_file_size_mb = float("nan")
+    best_rollout_infer_time_per_sample_sec = float("nan")
+    best_rollout_infer_time_per_batch_sec = float("nan")
+
+    # Cache Dataset/DataLoader by active_rollout_steps.
+    # When curriculum learning is enabled, each different rollout length needs
+    # a different training dataset because y has a different time length.
+    # Reusing the cached loader avoids rebuilding Dataset/DataLoader every epoch.
+    loader_cache: Dict[int, Tuple[SeaSurfaceSimpleDataset, DataLoader, DataLoader]] = {}
+
+    for epoch in range(1, int(config.n_epochs) + 1):
+        epoch_total_t0 = time.perf_counter()
+        current_lr = get_current_lr(optimizer)
+        active_rollout_steps = select_rollout_steps_for_epoch(epoch, int(config.n_epochs), rollout_steps_list, boundaries)
+        loader_key = int(active_rollout_steps)
+        if loader_key not in loader_cache:
+            loader_cache[loader_key] = build_dataloaders(config, active_rollout_steps, int(config.rollout_steps))
+        train_dataset, train_loader, val_loader = loader_cache[loader_key]
+
+        model.train()
+        train_loss_sum = 0.0
+        train_batches = 0
+        segment_weights = build_segment_weights(int(math.ceil(active_rollout_steps / int(config.output_steps))), config, device)
+
+        reset_peak_memory_stats(device)
+        sync_if_cuda(device)
+        train_phase_t0 = time.perf_counter()
+
+        for batch in train_loader:
+            x = batch["x"].to(device, non_blocking=True)
+            y = batch["y"].to(device, non_blocking=True)
+            preds, lengths = rollout_forward_train(
+                model=model,
+                x_init=x,
+                input_steps=int(config.input_steps),
+                one_shot_steps=int(config.output_steps),
+                rollout_steps=int(active_rollout_steps),
+                detach_context=bool(config.rollout_detach_context),
+            )
+            targets = get_rollout_targets(y, lengths)
+            loss, _ = compute_rollout_loss(preds, targets, segment_weights[:len(preds)], config, time_weight_cache)
+
+            optimizer.zero_grad(set_to_none=True)
+            loss.backward()
+            if float(config.grad_clip_norm) > 0.0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), float(config.grad_clip_norm))
+            optimizer.step()
+
+            train_loss_sum += float(loss.detach().item())
+            train_batches += 1
+
+        sync_if_cuda(device)
+        train_phase_time_sec = time.perf_counter() - train_phase_t0
+        train_peak_gpu_memory_mb = get_peak_memory_allocated_mb(device)
+        epoch_train_time_list.append(float(train_phase_time_sec))
+        train_peak_gpu_memory_mb_list.append(float(train_peak_gpu_memory_mb))
+
+        train_loss = train_loss_sum / max(train_batches, 1)
+        val_metrics = evaluate_rollout(
+            model=model,
+            loader=val_loader,
+            device=device,
+            input_steps=int(config.input_steps),
+            one_shot_steps=int(config.output_steps),
+            rollout_steps=int(config.rollout_steps),
+        )
+        select_metric = float(val_metrics["rollout_rmse"])
+        epoch_total_time_sec = time.perf_counter() - epoch_total_t0
+        epoch_total_time_list.append(float(epoch_total_time_sec))
+
+        logger.info(
+            "Epoch %03d/%03d | active_rollout=%d | train_loss=%.6f | val_rollout_rmse=%.6f | val_final_rmse=%.6f | val_last_chunk_rmse=%.6f | val_rel_l2=%.6f | lr=%.6f | train_time=%.2fs | epoch_time=%.2fs | train_peak_mem=%.1fMB | val_rollout_time/sample=%.6fs",
+            epoch,
+            config.n_epochs,
+            active_rollout_steps,
+            train_loss,
+            val_metrics["rollout_rmse"],
+            val_metrics["final_step_rmse"],
+            val_metrics["last_chunk_rmse"],
+            val_metrics["rel_l2"],
+            current_lr,
+            train_phase_time_sec,
+            epoch_total_time_sec,
+            train_peak_gpu_memory_mb,
+            val_metrics["rollout_infer_time_per_sample_sec"],
+        )
+
+        if select_metric < best_metric:
+            best_metric = select_metric
+            best_epoch = epoch
+            epochs_without_improve = 0
+            best_time_to_best_sec = time.perf_counter() - training_start_time
+            best_rollout_infer_time_per_sample_sec = float(val_metrics["rollout_infer_time_per_sample_sec"])
+            best_rollout_infer_time_per_batch_sec = float(val_metrics["rollout_infer_time_per_batch_sec"])
+            torch.save(
+                {
+                    "model_state_dict": model.state_dict(),
+                    "config": config.__dict__,
+                    "epoch": epoch,
+                    "best_rollout_rmse": best_metric,
+                    "train_dataset_mean": float(train_dataset.mean),
+                    "train_dataset_std": float(train_dataset.std),
+                    "model_size_info": model_size_info,
+                    "best_time_to_best_sec": float(best_time_to_best_sec),
+                    "best_rollout_infer_time_per_sample_sec": float(best_rollout_infer_time_per_sample_sec),
+                    "best_rollout_infer_time_per_batch_sec": float(best_rollout_infer_time_per_batch_sec),
+                },
+                config.checkpoint_path,
+            )
+            best_checkpoint_file_size_mb = get_file_size_mb(config.checkpoint_path)
+            logger.info(
+                "Saved new best checkpoint to %s | checkpoint_size=%.2f MB | time_to_best=%.2f s",
+                config.checkpoint_path,
+                best_checkpoint_file_size_mb,
+                best_time_to_best_sec,
+            )
+        else:
+            epochs_without_improve += 1
+
+        if epochs_without_improve >= int(config.early_stop_patience):
+            logger.info("Early stopping triggered at epoch %d", epoch)
+            break
+        if scheduler is not None:
+            scheduler_type = config.lr_scheduler_type.lower()
+            if scheduler_type == "plateau":
+                scheduler.step(val_metrics["rollout_rmse"])
+            else:
+                scheduler.step()
+
+    
+
+    total_training_time_sec = time.perf_counter() - training_start_time
+    avg_train_epoch_time_sec = float(np.mean(epoch_train_time_list)) if epoch_train_time_list else float("nan")
+    avg_epoch_total_time_sec = float(np.mean(epoch_total_time_list)) if epoch_total_time_list else float("nan")
+    max_train_peak_gpu_memory_mb = float(np.max(train_peak_gpu_memory_mb_list)) if train_peak_gpu_memory_mb_list else 0.0
+    avg_train_peak_gpu_memory_mb = float(np.mean(train_peak_gpu_memory_mb_list)) if train_peak_gpu_memory_mb_list else 0.0
+
+    summary_row = {
+        "experiment_name": config.experiment_name,
+        "model_arch": config.model_arch,
+        "n_modes": str(tuple(config.n_modes)),
+        "hidden_channels": int(config.hidden_channels),
+        "lifting_channels": int(config.lifting_channels),
+        "projection_channels": int(config.projection_channels),
+        "n_layers": int(config.n_layers),
+        "total_params": int(model_size_info["total_params"]),
+        "trainable_params": int(model_size_info["trainable_params"]),
+        "non_trainable_params": int(model_size_info["non_trainable_params"]),
+        "total_params_m": float(model_size_info["total_params_m"]),
+        "trainable_params_m": float(model_size_info["trainable_params_m"]),
+        "model_state_dict_size_mb": float(model_size_info["state_dict_size_mb"]),
+        "trainable_params_fp32_size_mb": float(model_size_info["trainable_params_fp32_size_mb"]),
+        "best_checkpoint_file_size_mb": float(best_checkpoint_file_size_mb),
+        "avg_train_epoch_time_sec": float(avg_train_epoch_time_sec),
+        "avg_epoch_total_time_sec": float(avg_epoch_total_time_sec),
+        "total_training_time_sec": float(total_training_time_sec),
+        "best_time_to_best_sec": float(best_time_to_best_sec),
+        "max_train_peak_gpu_memory_mb": float(max_train_peak_gpu_memory_mb),
+        "avg_train_peak_gpu_memory_mb": float(avg_train_peak_gpu_memory_mb),
+        "best_rollout_infer_time_per_sample_sec": float(best_rollout_infer_time_per_sample_sec),
+        "best_rollout_infer_time_per_batch_sec": float(best_rollout_infer_time_per_batch_sec),
+        "fno_unet_refiner_type": _resolve_decoder_type(config),
+        "fno_unet_base_channels": int(getattr(config, "fno_unet_base_channels", 0)),
+        "fno_unet_depth": int(getattr(config, "fno_unet_depth", 0)),
+        "fno_unet_use_gated_residual": int(getattr(config, "fno_unet_use_gated_residual", 0)),
+        "fno_unet_padding_mode": str(getattr(config, "fno_unet_padding_mode", "")),
+        "fno_unet_residual_scale": float(getattr(config, "fno_unet_residual_scale", 1.0)),
+        "spatial_gradient_loss_weight": float(getattr(config, "spatial_gradient_loss_weight", 0.0)),
+        "use_long_rollout_curriculum": int(config.use_long_rollout_curriculum),
+        "use_segment_weighting": int(config.use_segment_weighting),
+        "use_within_chunk_temporal_weighting": int(config.use_within_chunk_temporal_weighting),
+        "best_epoch": int(best_epoch),
+        "best_val_rollout_rmse": float(best_metric),
+        "checkpoint_path": config.checkpoint_path,
+    }
+    append_csv_row(config.train_summary_path, summary_row)
+    logger.info("Appended train summary to %s", config.train_summary_path)
+
+
+if __name__ == "__main__":
+    main()
