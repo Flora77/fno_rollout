@@ -105,6 +105,32 @@ neuraloperators
 /.pet-runs/
 /e HEAD
 
+# Local datasets, legacy checkpoints, and generated analysis assets
+/checkpoints_old/
+/data/bimodal/
+/data/sea_surface_simple/
+/neuralop/data/datasets/data/
+/neuralop/layers/fcgram_matrices/
+/frequency/sample3/
+/frequency/sample9/
+/frequency/val/
+/tools/sea_state_scatter/
+/.agents/
+
+# Additional model/export formats
+*.pth
+*.ckpt
+*.safetensors
+*.onnx
+*.npy
+
+# Small reproducibility inputs and package metadata are source artifacts.
+!requirements.txt
+!constraints.txt
+!neuralop/tests/test_config_key.txt
+!data/masks/area_masks.npz
+!data/masks/point_masks.npz
+
 # 上传github的git指令
 # git add .gitignore
 # git commit -m "update .gitignore"
