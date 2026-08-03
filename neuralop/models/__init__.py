@@ -13,4 +13,17 @@ from .gino import GINO
 from .codano import CODANO
 from .rno import RNO
 from .otno import OTNO
+from .fno_deeponet import (
+    FNODeepONet,
+    FNODeepONetGridForecaster,
+    FNODeepONetReconstructor,
+)
 from .base_model import get_model
+from .sparse_forecast_pipeline import (
+    BilinearFrozenRFNOPipeline,
+    FNODeepONetDirectSparsePipeline,
+    LearnedReconstructionRFNOPipeline,
+    MaskUNetFrozenRFNOPipeline,
+    PartialConvMAERFNOPipeline,
+    PartialConvMAEFrozenRFNOPipeline,
+)

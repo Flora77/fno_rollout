@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "mask_id": "common_spatial_patch75_seed42_v1",
+  "mask_semantics": "1=observed,0=missing",
+  "source": "x_full",
+  "tokenization": "spatial_patch",
+  "patch_size": 4,
+  "mask_ratio": 0.75,
+  "visible_ratio": 0.25,
+  "training_seed": 420075,
+  "validation_seed": 1771,
+  "sequence_contract": "dedicated torch.Generator independent of model initialization; one mask draw per batch in frozen data-loader order",
+  "train_split": "sea_surface_bimodal_v1/train",
+  "val_split": "sea_surface_bimodal_v1/val"
+}

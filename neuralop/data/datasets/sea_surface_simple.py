@@ -1,6 +1,6 @@
 import os
 from dataclasses import dataclass
-from typing import Optional, Tuple, Dict, List
+from typing import Optional, Sequence, Tuple, Dict, List
 
 import numpy as np
 import torch
@@ -63,6 +63,7 @@ class SeaSurfaceSimpleDataset(Dataset):
         normalize: bool = True,
         mean: Optional[float] = None,
         std: Optional[float] = None,
+        mat_files: Optional[Sequence[str]] = None,
     ):
         super().__init__()
         import glob
@@ -74,16 +75,30 @@ class SeaSurfaceSimpleDataset(Dataset):
         self.stride = int(stride)
         self.normalize = bool(normalize)
 
-        mat_files = sorted(glob.glob(os.path.join(data_dir, "*.mat")))
-        if len(mat_files) == 0:
+        if mat_files is None:
+            resolved_mat_files = sorted(glob.glob(os.path.join(data_dir, "*.mat")))
+        else:
+            data_dir_abs = os.path.abspath(data_dir)
+            resolved_mat_files = []
+            for configured_path in mat_files:
+                candidate = os.path.abspath(os.fspath(configured_path))
+                if os.path.commonpath((data_dir_abs, candidate)) != data_dir_abs:
+                    raise ValueError(
+                        f"Frozen MAT file is outside data_dir: {configured_path}"
+                    )
+                if not os.path.isfile(candidate) or not candidate.lower().endswith(".mat"):
+                    raise FileNotFoundError(f"Frozen MAT file not found: {candidate}")
+                resolved_mat_files.append(candidate)
+        if len(resolved_mat_files) == 0:
             raise ValueError(f"No .mat files found in {data_dir}")
+        self.mat_files = tuple(resolved_mat_files)
 
         self.data_list: List[np.ndarray] = []
         self.index_map: List[Tuple[int, int]] = []
         total_window = self.input_steps + self.output_steps
         all_data_for_norm: List[np.ndarray] = []
 
-        for f_idx, f_path in enumerate(mat_files):
+        for f_idx, f_path in enumerate(self.mat_files):
             height = _load_mat_array(f_path, variable=variable)
             self.data_list.append(height)
             T = height.shape[0]
@@ -117,6 +132,23 @@ class SeaSurfaceSimpleDataset(Dataset):
 
     def __len__(self) -> int:
         return len(self.index_map)
+
+    def get_history_only(self, idx: int) -> Dict[str, torch.Tensor]:
+        """Return only history without materializing the future-target slice.
+
+        This opt-in path is used by sparse reconstruction-only training.  The
+        legacy ``__getitem__`` contract remains unchanged.
+        """
+
+        f_idx, s = self.index_map[idx]
+        data = self.data_list[f_idx]
+        x = data[s : s + self.input_steps]
+        if x.shape[0] != self.input_steps:
+            raise RuntimeError(
+                f"x length mismatch at idx={idx}, expected {self.input_steps}, "
+                f"got {x.shape[0]}"
+            )
+        return {"x": torch.from_numpy(x).float()}
 
     def __getitem__(self, idx: int) -> Dict[str, torch.Tensor]:
         f_idx, s = self.index_map[idx]

@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "experiment_id": "final-test-infrastructure-fix",
+  "created_date": "2026-07-22",
+  "split_policy": "audit reads metadata only; final execution requires explicit test authorization",
+  "run_root": "./runs/sparse/final_test_locked_20260722_v1",
+  "result_root": "./results/final_test_locked_20260722_v1",
+  "shared": {
+    "mask_id": "mask_00006",
+    "mask_semantics": "1=observed,0=missing",
+    "mask_manifest_path": "./data/masks/point_masks.json",
+    "mask_manifest_sha256": "2b8fe09bb3647cf09c2da4603cc5f94fd1ea95db016bd7f6563c1a02d8f22962",
+    "mask_archive_path": "./data/masks/point_masks.npz",
+    "mask_archive_sha256": "f3e9e772fde5cd591dc256e8d7b7841258485eb5bea4b22aa7377e76e4c271e6",
+    "split_sha256": "c09ace37331885d471611e72bfabb133412831ba1af138689f6e809b88f38aa6",
+    "rfno_checkpoint_sha256": "e35420c96b6a514463e6868cb3ed4e94812975fe5ff07dac7b5b8e9821f04b09",
+    "normalization": {
+      "source": "b0_checkpoint_train_only",
+      "mean": -3.990174579637795e-10,
+      "std": 0.8006430268287659
+    },
+    "forecast_horizons": [30, 60, 120, 180, 240, 300]
+  },
+  "methods": [
+    {
+      "method_id": "B4",
+      "config_path": "./config/sparse_experiments/b4_mask_unet_frozen.formal.json",
+      "scientific_config_sha256": "7488051d09fdfaeb7d25ed0fb324a7a3c438e096d5dc4672f4540407fbb9c60c",
+      "checkpoint_path": "./runs/sparse/b4_mask_unet_frozen_fixed_points_r05_mask_00006_seed42_formal_20260721_v2/checkpoints/best.pt",
+      "checkpoint_sha256": "1a8de232140778fb2275caa9d759eeb5200f1778e490cf3b504898eae74964fc",
+      "split_manifest_path": "./runs/sparse/b4_mask_unet_frozen_fixed_points_r05_mask_00006_seed42_formal_20260721_v2/data_split.json",
+      "test_run_dir": "./runs/sparse/final_test_locked_20260722_v1/b4"
+    },
+    {
+      "method_id": "P2",
+      "config_path": "./config/sparse_experiments/p2_partialconv_mae_joint_d2_300f.formal.json",
+      "scientific_config_sha256": "83d7ee2017ecd39e1a7bf135eda29de452c2310dadcab9e571c11989482e07ca",
+      "checkpoint_path": "./runs/sparse/p2_partialconv_mae_joint_d2_curriculum_300f_fixed_points_r05_mask_00006_seed42_formal_20260721_v1/checkpoints/best.pt",
+      "checkpoint_sha256": "60192b31b2d26f03001df6816c1022200a30434fb623947370374a39feaea100",
+      "split_manifest_path": "./runs/sparse/p2_partialconv_mae_joint_d2_curriculum_300f_fixed_points_r05_mask_00006_seed42_formal_20260721_v1/data_split.json",
+      "test_run_dir": "./runs/sparse/final_test_locked_20260722_v1/p2"
+    }
+  ]
+}

@@ -97,8 +97,15 @@ plots/
 logs/
 neuraloperators
 
+# Local experiment artifacts and Codex runtime state
+/runs/
+/output/
+/results/
+/tmp/
+/.pet-runs/
+/e HEAD
+
 # 上传github的git指令
 # git add .gitignore
 # git commit -m "update .gitignore"
 # git push origin main  
-

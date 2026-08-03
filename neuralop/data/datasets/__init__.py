@@ -7,6 +7,12 @@ from .mesh_datamodule import MeshDataModule
 from .car_cfd_dataset import CarCFDDataset, load_mini_car
 from .ot_datamodule import OTDataModule
 from .car_ot_dataset import CarOTDataset, load_saved_ot, CFDDataProcessor
+from .sparse_sea_surface import (
+    SparseMaskManifest,
+    SparseMaskMetadata,
+    SparseSeaSurfaceDataset,
+    sparse_model_inputs,
+)
 
 # only import SphericalSWEDataset if torch_harmonics is built locally
 try:

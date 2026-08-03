@@ -1,0 +1,83 @@
+{
+  "experiment_id": "V2",
+  "experiment_name": "v2_a1_tubelet_mae_pretrain_patch90_seed42",
+  "data": {
+    "input_steps": 60,
+    "output_steps": 30,
+    "rollout_steps": 300,
+    "height": 64,
+    "width": 64,
+    "dt": 0.25,
+    "data_root": "./data/bimodal",
+    "split_manifest_path": "./data/splits/sea_surface_bimodal_v1.json",
+    "variable": "height",
+    "stride": 4,
+    "batch_size": 2,
+    "val_batch_size": 2,
+    "test_batch_size": 2,
+    "num_workers": 0,
+    "pin_memory": true
+  },
+  "observation": {
+    "mask_type": "fixed_points",
+    "observation_rate": 0.05,
+    "manifest_path": "./data/masks/point_masks.npz",
+    "mask_id": "mask_00006",
+    "noise_std_fraction": 0.0,
+    "temporal_dropout": 0.0,
+    "seed": 42
+  },
+  "pipeline": {
+    "reconstructor": "tubelet_mae",
+    "coupling": "frozen",
+    "forecaster": "rfno",
+    "rfno_checkpoint": "./checkpoints/hparam_sensitivity/mode_m28x28_h32_lp64.pt"
+  },
+  "model": {
+    "vit_tokenization": "tubelet",
+    "vit_patch_size": 4,
+    "vit_tubelet_size": 10,
+    "vit_encoder_dim": 128,
+    "vit_encoder_depth": 4,
+    "vit_encoder_heads": 4,
+    "vit_decoder_dim": 64,
+    "vit_decoder_depth": 2,
+    "vit_decoder_heads": 4,
+    "vit_mlp_ratio": 4.0
+  },
+  "training": {
+    "epochs": 100,
+    "pretrain_reconstructor": true,
+    "mae_mask_ratio": 0.9,
+    "forecast_supervision": false,
+    "reconstructor_lr": 0.0002,
+    "rfno_lr": 0.00002,
+    "weight_decay": 0.0001,
+    "grad_clip_norm": 1.0,
+    "amp": true,
+    "scheduler": {"name": "cosine", "min_lr": 0.000001},
+    "early_stopping_patience": 20,
+    "primary_loss": "reconstruction_missing_nrmse",
+    "primary_mode": "min",
+    "use_rollout_curriculum": false,
+    "max_rollout_steps": 30,
+    "loss_weights": {
+      "hidden_reconstruction": 1.0,
+      "observation_consistency": 0.0,
+      "history_gradient": 0.0,
+      "rollout": 0.0,
+      "forecast_gradient": 0.0,
+      "spectrum": 0.0
+    }
+  },
+  "evaluation": {
+    "forecast_horizons": [30, 60, 120, 180, 240, 300],
+    "primary_metric": "forecast_300.nrmse"
+  },
+  "runtime": {
+    "run_root": "./runs/sparse",
+    "seed": 42,
+    "device": "cuda",
+    "hash_data_files": true
+  }
+}

@@ -1,0 +1,7 @@
+interface:
+  display_name: "Sparse Sea-Surface Experiments"
+  short_description: "Build and validate sparse wave experiments"
+  default_prompt: "Use $sea-surface-sparse-experiments to implement one validated sparse-observation sea-surface experiment."
+
+policy:
+  allow_implicit_invocation: false

@@ -1,0 +1,10 @@
+{
+  "experiment_id": "B1",
+  "experiment_name": "no_pretrain100_bilinear_frozen_fixed_r05_mask_00006_test300_20260731_v1",
+  "data": {"input_steps": 60, "output_steps": 30, "rollout_steps": 300, "height": 64, "width": 64, "dt": 0.25, "data_root": "./data/bimodal", "split_manifest_path": "./data/splits/sea_surface_bimodal_v1.json", "variable": "height", "stride": 4, "batch_size": 2, "val_batch_size": 2, "test_batch_size": 2, "num_workers": 0, "pin_memory": true},
+  "observation": {"mask_type": "fixed_points", "observation_rate": 0.05, "manifest_path": "./data/masks/point_masks.npz", "mask_id": "mask_00006", "noise_std_fraction": 0.0, "temporal_dropout": 0.0, "seed": 42},
+  "pipeline": {"reconstructor": "bilinear", "coupling": "frozen", "forecaster": "rfno", "rfno_checkpoint": "./checkpoints/hparam_sensitivity/mode_m28x28_h32_lp64.pt"},
+  "training": {"pretrain_reconstructor": false, "use_rollout_curriculum": false, "max_rollout_steps": 300},
+  "evaluation": {"forecast_horizons": [30, 60, 120, 180, 240, 300], "primary_metric": "forecast_300.nrmse"},
+  "runtime": {"run_root": "./runs/sparse", "seed": 42, "device": "cuda", "hash_data_files": true}
+}

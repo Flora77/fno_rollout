@@ -1,0 +1,75 @@
+{
+  "schema_version": 2,
+  "experiment_id": "final-test-locked-v2",
+  "created_date": "2026-07-23",
+  "go_no_go": "GO",
+  "decision_source": "./results/final_val_decision_v2_20260723/final_method_lock.json",
+  "test_access_policy": "manifest audit reads metadata only; test execution requires a separate explicit authorization",
+  "run_root": "./runs/sparse/final_test_locked_20260723_v2",
+  "result_root": "./results/final_test_locked_20260723_v2",
+  "shared": {
+    "scenario": "fixed_points_5pct",
+    "mask_id": "mask_00006",
+    "mask_semantics": "1=observed,0=missing",
+    "mask_manifest_path": "./data/masks/point_masks.json",
+    "mask_manifest_sha256": "2b8fe09bb3647cf09c2da4603cc5f94fd1ea95db016bd7f6563c1a02d8f22962",
+    "mask_archive_path": "./data/masks/point_masks.npz",
+    "mask_archive_sha256": "f3e9e772fde5cd591dc256e8d7b7841258485eb5bea4b22aa7377e76e4c271e6",
+    "split_sha256": "c09ace37331885d471611e72bfabb133412831ba1af138689f6e809b88f38aa6",
+    "rfno_checkpoint_path": "./checkpoints/hparam_sensitivity/mode_m28x28_h32_lp64.pt",
+    "rfno_checkpoint_sha256": "e35420c96b6a514463e6868cb3ed4e94812975fe5ff07dac7b5b8e9821f04b09",
+    "normalization": {
+      "source": "b0_checkpoint_train_only",
+      "mean": -3.990174579637795e-10,
+      "std": 0.8006430268287659
+    },
+    "input_steps": 60,
+    "output_steps": 30,
+    "rollout_steps": 300,
+    "forecast_horizons": [30, 60, 120, 180, 240, 300]
+  },
+  "checkpoint_policy": "use canonical seed42 checkpoints selected only from validation; no test-based selection and no luckiest-seed selection",
+  "methods": [
+    {
+      "method_id": "B4",
+      "method": "Mask U-Net + frozen RFNO",
+      "role": "locked_primary_fixed_layout",
+      "config_path": "./config/sparse_experiments/b4_mask_unet_frozen.formal.json",
+      "scientific_config_sha256": "7488051d09fdfaeb7d25ed0fb324a7a3c438e096d5dc4672f4540407fbb9c60c",
+      "checkpoint_path": "./runs/sparse/b4_mask_unet_frozen_fixed_points_r05_mask_00006_seed42_formal_20260721_v2/checkpoints/best.pt",
+      "checkpoint_sha256": "1a8de232140778fb2275caa9d759eeb5200f1778e490cf3b504898eae74964fc",
+      "checkpoint_epoch": 56,
+      "checkpoint_run_kind": "formal",
+      "split_manifest_path": "./runs/sparse/b4_mask_unet_frozen_fixed_points_r05_mask_00006_seed42_formal_20260721_v2/data_split.json",
+      "locked_val_forecast_300_nrmse": 0.09179023283217644,
+      "test_run_dir": "./runs/sparse/final_test_locked_20260723_v2/b4",
+      "test_result_dir": "./results/final_test_locked_20260723_v2/b4"
+    },
+    {
+      "method_id": "P1-pretrained",
+      "method": "PartialConv-MAE pretrained + frozen RFNO",
+      "role": "locked_comparator_fixed_layout",
+      "config_path": "./config/sparse_experiments/p1_init_ablation_pretrained_seed42.formal.json",
+      "scientific_config_sha256": "01aa1f4d16340c2bec2b10fd942c7f2d6add1011893fdea6ca78a4729473b51d",
+      "checkpoint_path": "./runs/sparse/p1_init_ablation_pretrained_seed42_30ep_fixed_r05_mask_00006_20260722_v1/checkpoints/best.pt",
+      "checkpoint_sha256": "bb3df4e3dc63bf30f9478fb54d41a33443aff654bf09726042ef41bd44f88b75",
+      "checkpoint_epoch": 11,
+      "checkpoint_run_kind": "formal",
+      "initialization_checkpoint_sha256": "34b169d9f4cd82ea6efbaab6833a8aca17f8b2ec07b3e284a14e67cae750f69a",
+      "split_manifest_path": "./runs/sparse/p1_init_ablation_pretrained_seed42_30ep_fixed_r05_mask_00006_20260722_v1/data_split.json",
+      "locked_val_forecast_300_nrmse": 0.14935852043368944,
+      "test_run_dir": "./runs/sparse/final_test_locked_20260723_v2/p1_pretrained",
+      "test_result_dir": "./results/final_test_locked_20260723_v2/p1_pretrained"
+    }
+  ],
+  "audit": {
+    "checkpoint_hashes_verified": true,
+    "split_hashes_equal": true,
+    "mask_equal": true,
+    "normalization_equal": true,
+    "horizons_equal": true,
+    "unique_run_directories_absent": true,
+    "unique_result_directories_absent": true,
+    "test_accessed": false
+  }
+}
