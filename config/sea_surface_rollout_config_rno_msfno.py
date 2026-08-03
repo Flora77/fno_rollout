@@ -1,0 +1,177 @@
+from dataclasses import dataclass
+import os
+import torch
+
+
+@dataclass
+class SeaSurfaceRolloutConfig:
+    # -------------------------
+    # data
+    # -------------------------
+    data_root: str = "./data/bimodal"
+    variable: str = "height"
+
+    # Same rollout protocol as the FNO-UNet metrics version:
+    # 60 input frames -> one forward predicts 30 frames -> autoregressive rollout to 300 frames.
+    input_steps: int = 60
+    output_steps: int = 30
+    stride: int = 4
+    normalize: bool = True
+    batch_size: int = 16
+    val_batch_size: int = 16
+    test_batch_size: int = 16
+    num_workers: int = 0
+    pin_memory: bool = True
+
+    # -------------------------
+    # model
+    # -------------------------
+    # Options:
+    #   fno   : the original RNO/FNO baseline. The old "rno" filename actually uses this model.
+    #   tfno  : tensorized FNO if your neuraloperator version supports it.
+    #   msfno : multi-scale FNO wrapper implemented in the training script.
+    model_arch: str = "fno"
+
+    # Base FNO settings. For MSFNO, these are the reference dimensions used to build branch widths.
+    n_modes: tuple = (28, 28)
+    hidden_channels: int = 32
+    lifting_channels: int = 64
+    projection_channels: int = 64
+    n_layers: int = 4
+
+    # -------------------------
+    # MSFNO settings
+    # -------------------------
+    msfno_branch_arch: str = "fno"       # fno / tfno
+    msfno_scales: tuple = (0.5, 1.0, 2.0, 4.0)
+
+    # 0 means computed from the base FNO settings and msfno_branch_width_factor.
+    # With width_factor=0.5, each branch width is roughly 16 when hidden_channels=32.
+    msfno_branch_width_factor: float = 0.5
+    msfno_branch_hidden_channels: int = 0
+    msfno_branch_lifting_channels: int = 0
+    msfno_branch_projection_channels: int = 0
+
+    # Branch input z_i = [c_i * eta, c_i * x, c_i * y].
+    msfno_scale_input_field: bool = True
+    msfno_add_scaled_coords: bool = True
+    msfno_scale_coordinates: bool = True
+    msfno_coord_range: tuple = (0.0, 1.0)
+    msfno_output_scale: bool = False
+    msfno_branch_positional_embedding: object = None
+
+    # Branch fusion. "conv" uses a lightweight 3D CNN over [branch, time, y, x].
+    # Alternatives for ablation: weighted_sum / mean.
+    msfno_fusion: str = "conv"
+    msfno_conv_hidden_channels: tuple = (8, 8)
+    msfno_conv_kernel_size: tuple = (3, 3, 3)
+    msfno_conv_norm: str = "batch"       # batch / instance / none
+    msfno_conv_activation: str = "relu"  # relu / gelu / silu / sin / none
+
+    # -------------------------
+    # optimization
+    # -------------------------
+    learning_rate: float = 5e-4
+    weight_decay: float = 1e-4
+    n_epochs: int = 100
+    early_stop_patience: int = 100
+    grad_clip_norm: float = 1.0
+
+    # Same auxiliary slope loss switch as FNO-UNet, for fair ablation/comparison.
+    use_spatial_gradient_loss: bool = True
+    spatial_gradient_loss_weight: float = 0.05
+
+    seed: int = 42
+    device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+    # lr scheduler
+    use_lr_scheduler: bool = True
+    lr_scheduler_type: str = "cosine"     # step / cosine / plateau
+    lr_scheduler_step_size: int = 20
+    lr_scheduler_gamma: float = 0.5
+    lr_scheduler_t_max: int = n_epochs
+    lr_scheduler_eta_min: float = 1e-6
+    lr_scheduler_patience: int = 10
+    lr_scheduler_factor: float = 0.5
+    lr_scheduler_min_lr: float = 1e-6
+
+    # -------------------------
+    # rollout training design
+    # -------------------------
+    use_long_rollout_curriculum: bool = True
+    rollout_train_steps: tuple = (30, 60, 120, 180, 240, 300)
+    rollout_curriculum_boundaries: tuple = (0.0, 0.1, 0.2, 0.3, 0.45, 0.6)
+    rollout_steps: int = 300
+    rollout_stride: int = 4
+    rollout_detach_context: bool = False
+
+    use_segment_weighting: bool = True
+    segment_weight_type: str = "linear"  # none / linear / power / exp
+    segment_weight_min: float = 1.0
+    segment_weight_max: float = 2.5
+    segment_weight_power: float = 2.0
+    normalize_segment_weights: bool = True
+
+    use_within_chunk_temporal_weighting: bool = False
+    chunk_time_weight_type: str = "linear"  # none / linear / power / exp
+    chunk_time_weight_min: float = 1.0
+    chunk_time_weight_max: float = 2.0
+    chunk_time_weight_power: float = 2.0
+    normalize_chunk_time_weights: bool = True
+
+    # -------------------------
+    # evaluation / plotting
+    # -------------------------
+    dt: float = 0.25
+    evaluation_num_full_samples_to_save: int = 3
+    evaluation_num_trace_points: int = 5
+    spectral_high_k_ratio: float = 0.67
+    spectral_band_split_ratios: tuple = (0.33, 0.67, 0.85)
+    plot_num_samples: int = 3
+    plot_future_steps: tuple = (59, 149, 299)
+    denormalize_for_plot: bool = True
+
+    # -------------------------
+    # experiment / io
+    # -------------------------
+    experiment_name: str = "fno_R300"
+    checkpoint_dir: str = "./checkpoints"
+    log_dirname: str = "logs"
+    plot_dirname: str = "plots"
+    train_summary_csv: str = "ablation_train_summary.csv"
+    val_summary_csv: str = "ablation_val_summary.csv"
+    test_summary_csv: str = "ablation_test_summary.csv"
+    save_val_mat: bool = True
+    save_test_mat: bool = True
+
+    @property
+    def checkpoint_path(self) -> str:
+        return os.path.join(self.checkpoint_dir, f"{self.experiment_name}.pt")
+
+    @property
+    def plot_dir(self) -> str:
+        return os.path.join(self.checkpoint_dir, self.plot_dirname, self.experiment_name)
+
+    @property
+    def train_summary_path(self) -> str:
+        return os.path.join(self.checkpoint_dir, self.train_summary_csv)
+
+    @property
+    def val_summary_path(self) -> str:
+        return os.path.join(self.checkpoint_dir, self.val_summary_csv)
+
+    @property
+    def test_summary_path(self) -> str:
+        return os.path.join(self.checkpoint_dir, self.test_summary_csv)
+
+    @property
+    def log_dir(self) -> str:
+        return os.path.join(self.checkpoint_dir, self.log_dirname)
+
+    @property
+    def val_mat_path(self) -> str:
+        return os.path.join(self.checkpoint_dir, f"{self.experiment_name}_val_rollout.mat")
+
+    @property
+    def test_mat_path(self) -> str:
+        return os.path.join(self.checkpoint_dir, f"{self.experiment_name}_test_rollout.mat")
